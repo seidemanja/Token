@@ -16,7 +16,7 @@ contract MyToken {
         balanceOf[msg.sender] = totalSupply;
         emit Transfer(address(0), msg.sender, totalSupply);
     }
-
+ 
     function transfer(address _to, uint256 _value) public returns (bool) {
         require(balanceOf[msg.sender] >= _value, "Insufficient balance");
         balanceOf[msg.sender] -= _value;
