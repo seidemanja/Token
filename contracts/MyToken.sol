@@ -6,7 +6,7 @@ contract MyToken {
     string public symbol = "MTT";
     uint8 public decimals = 18;
     uint256 public totalSupply;
-
+ 
     mapping(address => uint256) public balanceOf;
 
     event Transfer(address indexed from, address indexed to, uint256 value);
