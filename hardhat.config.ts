@@ -1,7 +1,13 @@
-import { defineConfig } from "hardhat/config";
+import { HardhatUserConfig } from "hardhat/config";
+import "@nomicfoundation/hardhat-toolbox";
 
-export default defineConfig({
-  solidity: {
-    version: "0.8.28",
-  },
-});
+const config: HardhatUserConfig = {
+  solidity: "0.8.20",
+  networks: {
+    hardhat: {
+      chainId: 1337
+    }
+  }
+};
+
+export default config;
