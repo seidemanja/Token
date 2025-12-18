@@ -1,27 +1,19 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.28;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
 
-contract MyToken {
-    string public name = "My Test Token";
-    string public symbol = "MTT";
-    uint8 public decimals = 18;
-    uint256 public totalSupply;
- 
-    mapping(address => uint256) public balanceOf;
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-    event Transfer(address indexed from, address indexed to, uint256 value);
-
-    constructor(uint256 _initialSupply) {
-        totalSupply = _initialSupply * 10 ** decimals;
-        balanceOf[msg.sender] = totalSupply;
-        emit Transfer(address(0), msg.sender, totalSupply);
+contract MyToken is ERC20, Ownable {
+    constructor(uint256 initialSupply) 
+        ERC20("MyToken", "MTK") 
+        Ownable(msg.sender)
+    {
+        _mint(msg.sender, initialSupply);
     }
- 
-    function transfer(address _to, uint256 _value) public returns (bool) {
-        require(balanceOf[msg.sender] >= _value, "Insufficient balance");
-        balanceOf[msg.sender] -= _value;
-        balanceOf[_to] += _value;
-        emit Transfer(msg.sender, _to, _value);
-        return true;
+
+    // Allow owner to mint more tokens if needed
+    function mint(address to, uint256 amount) public onlyOwner {
+        _mint(to, amount);
     }
 }
