@@ -1,8 +1,20 @@
+# RAW EVENT ENTITIES (1 row per on-chain event)
+
+type Transfer @entity(immutable: true) {
+  id: Bytes!
+  from: Bytes!          # address
+  to: Bytes!            # address
+  value: BigInt!        # uint256
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
 type Approval @entity(immutable: true) {
   id: Bytes!
-  owner: Bytes! # address
-  spender: Bytes! # address
-  value: BigInt! # uint256
+  owner: Bytes!         # address
+  spender: Bytes!       # address
+  value: BigInt!        # uint256
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!
@@ -11,7 +23,7 @@ type Approval @entity(immutable: true) {
 type OwnershipTransferred @entity(immutable: true) {
   id: Bytes!
   previousOwner: Bytes! # address
-  newOwner: Bytes! # address
+  newOwner: Bytes!      # address
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!
@@ -19,17 +31,7 @@ type OwnershipTransferred @entity(immutable: true) {
 
 type Paused @entity(immutable: true) {
   id: Bytes!
-  account: Bytes! # address
-  blockNumber: BigInt!
-  blockTimestamp: BigInt!
-  transactionHash: Bytes!
-}
-
-type Transfer @entity(immutable: true) {
-  id: Bytes!
-  from: Bytes! # address
-  to: Bytes! # address
-  value: BigInt! # uint256
+  account: Bytes!       # address
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!
@@ -37,7 +39,55 @@ type Transfer @entity(immutable: true) {
 
 type Unpaused @entity(immutable: true) {
   id: Bytes!
-  account: Bytes! # address
+  account: Bytes!       # address
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+
+# DERIVED / AGGREGATE ENTITIES (computed from raw events)
+
+# One per wallet
+type Account @entity(immutable: false) {
+  id: Bytes!                 # wallet address
+  balance: BigInt!           # current token balance
+  transferCount: BigInt!     # total transfers involving this account
+  firstSeenAt: BigInt!       # timestamp
+  lastSeenAt: BigInt!        # timestamp
+}
+
+# Global stats (single row, id = "global")
+type TokenStats @entity(immutable: false) {
+  id: ID!                    # always "global"
+  totalSupply: BigInt!
+  totalTransfers: BigInt!
+  uniqueHolders: BigInt!
+  lastUpdatedBlock: BigInt!
+}
+
+# Daily aggregates 
+type DailyTokenStats @entity(immutable: false) {
+  id: ID!                    # YYYY-MM-DD
+  date: Int!                 # unix day
+  transferCount: BigInt!
+  transferVolume: BigInt!
+  uniqueSenders: BigInt!
+  uniqueReceivers: BigInt!
+}
+
+# NFT-specific 
+type NFT @entity(immutable: false) {
+  id: ID!                    # tokenId
+  owner: Bytes!
+  mintedAt: BigInt!
+  mintTxHash: Bytes!
+}
+
+type NFTMint @entity(immutable: true) {
+  id: Bytes!
+  tokenId: BigInt!
+  to: Bytes!
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!
