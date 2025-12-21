@@ -1,0 +1,8 @@
+{
+  "name": "JST VIP #1",
+  "description": "JST VIP badge for eligible token holders.",
+  "image": "ipfs://bafybeiebhfwxw5ywmfyrrylqmywy5x63bubrq345qjwpxbqkoxgbpgk2ta",
+  "attributes": [
+    { "trait_type": "Tier", "value": "VIP" }
+  ]
+}
