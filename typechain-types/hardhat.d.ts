@@ -86,6 +86,34 @@ declare module "hardhat/types/runtime" {
       signerOrOptions?: ethers.Signer | FactoryOptions
     ): Promise<Contracts.Strings__factory>;
     getContractFactory(
+      name: "INonfungiblePositionManagerMinimal",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.INonfungiblePositionManagerMinimal__factory>;
+    getContractFactory(
+      name: "IPermit2",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IPermit2__factory>;
+    getContractFactory(
+      name: "ISwapRouterMinimal",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.ISwapRouterMinimal__factory>;
+    getContractFactory(
+      name: "IUniswapV3FactoryMinimal",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IUniswapV3FactoryMinimal__factory>;
+    getContractFactory(
+      name: "IUniswapV3PoolMinimal",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IUniswapV3PoolMinimal__factory>;
+    getContractFactory(
+      name: "IUniswapV3PoolSwapMinimal",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IUniswapV3PoolSwapMinimal__factory>;
+    getContractFactory(
+      name: "IWETH9Minimal",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IWETH9Minimal__factory>;
+    getContractFactory(
       name: "JSTVIP",
       signerOrOptions?: ethers.Signer | FactoryOptions
     ): Promise<Contracts.JSTVIP__factory>;
@@ -93,6 +121,38 @@ declare module "hardhat/types/runtime" {
       name: "MyToken",
       signerOrOptions?: ethers.Signer | FactoryOptions
     ): Promise<Contracts.MyToken__factory>;
+    getContractFactory(
+      name: "IERC20Pay",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IERC20Pay__factory>;
+    getContractFactory(
+      name: "IUniswapV3PoolSwap",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IUniswapV3PoolSwap__factory>;
+    getContractFactory(
+      name: "IUniswapV3SwapCallback",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IUniswapV3SwapCallback__factory>;
+    getContractFactory(
+      name: "PoolSwapExecutor",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.PoolSwapExecutor__factory>;
+    getContractFactory(
+      name: "IERC20Pay",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IERC20Pay__factory>;
+    getContractFactory(
+      name: "IPoolViewForCallback",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IPoolViewForCallback__factory>;
+    getContractFactory(
+      name: "IUniswapV3SwapCallback",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.IUniswapV3SwapCallback__factory>;
+    getContractFactory(
+      name: "SwapCallback",
+      signerOrOptions?: ethers.Signer | FactoryOptions
+    ): Promise<Contracts.SwapCallback__factory>;
 
     getContractAt(
       name: "AccessControl",
@@ -185,6 +245,41 @@ declare module "hardhat/types/runtime" {
       signer?: ethers.Signer
     ): Promise<Contracts.Strings>;
     getContractAt(
+      name: "INonfungiblePositionManagerMinimal",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.INonfungiblePositionManagerMinimal>;
+    getContractAt(
+      name: "IPermit2",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IPermit2>;
+    getContractAt(
+      name: "ISwapRouterMinimal",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.ISwapRouterMinimal>;
+    getContractAt(
+      name: "IUniswapV3FactoryMinimal",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IUniswapV3FactoryMinimal>;
+    getContractAt(
+      name: "IUniswapV3PoolMinimal",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IUniswapV3PoolMinimal>;
+    getContractAt(
+      name: "IUniswapV3PoolSwapMinimal",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IUniswapV3PoolSwapMinimal>;
+    getContractAt(
+      name: "IWETH9Minimal",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IWETH9Minimal>;
+    getContractAt(
       name: "JSTVIP",
       address: string | ethers.Addressable,
       signer?: ethers.Signer
@@ -194,6 +289,46 @@ declare module "hardhat/types/runtime" {
       address: string | ethers.Addressable,
       signer?: ethers.Signer
     ): Promise<Contracts.MyToken>;
+    getContractAt(
+      name: "IERC20Pay",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IERC20Pay>;
+    getContractAt(
+      name: "IUniswapV3PoolSwap",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IUniswapV3PoolSwap>;
+    getContractAt(
+      name: "IUniswapV3SwapCallback",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IUniswapV3SwapCallback>;
+    getContractAt(
+      name: "PoolSwapExecutor",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.PoolSwapExecutor>;
+    getContractAt(
+      name: "IERC20Pay",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IERC20Pay>;
+    getContractAt(
+      name: "IPoolViewForCallback",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IPoolViewForCallback>;
+    getContractAt(
+      name: "IUniswapV3SwapCallback",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.IUniswapV3SwapCallback>;
+    getContractAt(
+      name: "SwapCallback",
+      address: string | ethers.Addressable,
+      signer?: ethers.Signer
+    ): Promise<Contracts.SwapCallback>;
 
     deployContract(
       name: "AccessControl",
@@ -268,6 +403,34 @@ declare module "hardhat/types/runtime" {
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.Strings>;
     deployContract(
+      name: "INonfungiblePositionManagerMinimal",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.INonfungiblePositionManagerMinimal>;
+    deployContract(
+      name: "IPermit2",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IPermit2>;
+    deployContract(
+      name: "ISwapRouterMinimal",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.ISwapRouterMinimal>;
+    deployContract(
+      name: "IUniswapV3FactoryMinimal",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3FactoryMinimal>;
+    deployContract(
+      name: "IUniswapV3PoolMinimal",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3PoolMinimal>;
+    deployContract(
+      name: "IUniswapV3PoolSwapMinimal",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3PoolSwapMinimal>;
+    deployContract(
+      name: "IWETH9Minimal",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IWETH9Minimal>;
+    deployContract(
       name: "JSTVIP",
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.JSTVIP>;
@@ -275,6 +438,38 @@ declare module "hardhat/types/runtime" {
       name: "MyToken",
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.MyToken>;
+    deployContract(
+      name: "IERC20Pay",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IERC20Pay>;
+    deployContract(
+      name: "IUniswapV3PoolSwap",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3PoolSwap>;
+    deployContract(
+      name: "IUniswapV3SwapCallback",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3SwapCallback>;
+    deployContract(
+      name: "PoolSwapExecutor",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.PoolSwapExecutor>;
+    deployContract(
+      name: "IERC20Pay",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IERC20Pay>;
+    deployContract(
+      name: "IPoolViewForCallback",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IPoolViewForCallback>;
+    deployContract(
+      name: "IUniswapV3SwapCallback",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3SwapCallback>;
+    deployContract(
+      name: "SwapCallback",
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.SwapCallback>;
 
     deployContract(
       name: "AccessControl",
@@ -367,6 +562,41 @@ declare module "hardhat/types/runtime" {
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.Strings>;
     deployContract(
+      name: "INonfungiblePositionManagerMinimal",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.INonfungiblePositionManagerMinimal>;
+    deployContract(
+      name: "IPermit2",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IPermit2>;
+    deployContract(
+      name: "ISwapRouterMinimal",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.ISwapRouterMinimal>;
+    deployContract(
+      name: "IUniswapV3FactoryMinimal",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3FactoryMinimal>;
+    deployContract(
+      name: "IUniswapV3PoolMinimal",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3PoolMinimal>;
+    deployContract(
+      name: "IUniswapV3PoolSwapMinimal",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3PoolSwapMinimal>;
+    deployContract(
+      name: "IWETH9Minimal",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IWETH9Minimal>;
+    deployContract(
       name: "JSTVIP",
       args: any[],
       signerOrOptions?: ethers.Signer | DeployContractOptions
@@ -376,6 +606,46 @@ declare module "hardhat/types/runtime" {
       args: any[],
       signerOrOptions?: ethers.Signer | DeployContractOptions
     ): Promise<Contracts.MyToken>;
+    deployContract(
+      name: "IERC20Pay",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IERC20Pay>;
+    deployContract(
+      name: "IUniswapV3PoolSwap",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3PoolSwap>;
+    deployContract(
+      name: "IUniswapV3SwapCallback",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3SwapCallback>;
+    deployContract(
+      name: "PoolSwapExecutor",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.PoolSwapExecutor>;
+    deployContract(
+      name: "IERC20Pay",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IERC20Pay>;
+    deployContract(
+      name: "IPoolViewForCallback",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IPoolViewForCallback>;
+    deployContract(
+      name: "IUniswapV3SwapCallback",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.IUniswapV3SwapCallback>;
+    deployContract(
+      name: "SwapCallback",
+      args: any[],
+      signerOrOptions?: ethers.Signer | DeployContractOptions
+    ): Promise<Contracts.SwapCallback>;
 
     // default types
     getContractFactory(

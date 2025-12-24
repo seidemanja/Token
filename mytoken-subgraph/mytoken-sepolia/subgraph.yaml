@@ -1,9 +1,14 @@
 specVersion: 1.3.0
 indexerHints:
   prune: auto
+
 schema:
   file: ./schema.graphql
+
 dataSources:
+  # -------------------------
+  # ERC-20 Token data source
+  # -------------------------
   - kind: ethereum
     name: MyToken
     network: sepolia
@@ -21,7 +26,6 @@ dataSources:
         - OwnershipTransferred
         - Paused
         - Unpaused
-        # future derived entities
         - Account
         - TokenStats
         - DailyTokenStats
@@ -40,3 +44,30 @@ dataSources:
         - event: Unpaused(address)
           handler: handleUnpaused
       file: ./src/my-token.ts
+
+  # -------------------------
+  # ERC-721 NFT data source
+  # -------------------------
+  - kind: ethereum
+    name: JSTVIP
+    network: sepolia
+    source:
+      address: "0x369215B6676E997F6Abb1bb835c933D3f69dB5d9"
+      abi: ERC721
+      # Replace this with the NFT contract deployment block for fastest indexing
+      startBlock: 9872689
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities:
+        - NftTransfer
+        - NftToken
+        - NftOwner
+      abis:
+        - name: ERC721
+          file: ./abis/ERC721.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,indexed uint256)
+          handler: handleNftTransfer
+      file: ./src/jstvip-nft.ts

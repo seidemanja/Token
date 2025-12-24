@@ -45,7 +45,6 @@ type Unpaused @entity(immutable: true) {
   transactionHash: Bytes!
 }
 
-
 # DERIVED / AGGREGATE ENTITIES (computed from raw events)
 
 # One per wallet
@@ -66,7 +65,7 @@ type TokenStats @entity(immutable: false) {
   lastUpdatedBlock: BigInt!
 }
 
-# Daily aggregates 
+# Daily aggregates
 type DailyTokenStats @entity(immutable: false) {
   id: ID!                    # YYYY-MM-DD
   date: Int!                 # unix day
@@ -76,19 +75,46 @@ type DailyTokenStats @entity(immutable: false) {
   uniqueReceivers: BigInt!
 }
 
-# NFT-specific 
-type NFT @entity(immutable: false) {
-  id: ID!                    # tokenId
-  owner: Bytes!
-  mintedAt: BigInt!
-  mintTxHash: Bytes!
-}
+# =========================
+# ERC-721 (JSTVIP) ENTITIES
+# =========================
 
-type NFTMint @entity(immutable: true) {
-  id: Bytes!
-  tokenId: BigInt!
+# One per ERC-721 Transfer log (mint = from=0x0)
+type NftTransfer @entity(immutable: true) {
+  id: ID!                    # txHash-logIndex
+  contract: Bytes!           # NFT contract address
+  from: Bytes!
   to: Bytes!
+  tokenId: BigInt!
+
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!
+  logIndex: BigInt!
+
+  isMint: Boolean!
+  isBurn: Boolean!
+}
+
+# Current state per NFT tokenId
+type NftToken @entity(immutable: false) {
+  id: ID!                    # contract-tokenId
+  contract: Bytes!
+  tokenId: BigInt!
+
+  owner: Bytes!              # current owner
+  mintedAtBlock: BigInt!
+  mintedAtTimestamp: BigInt!
+  mintTxHash: Bytes!
+
+  burnedAtBlock: BigInt
+  burnedAtTimestamp: BigInt
+  burnTxHash: Bytes
+}
+
+# Current balance per owner (derived)
+type NftOwner @entity(immutable: false) {
+  id: ID!                    # owner address (hex string)
+  contract: Bytes!           # NFT contract address
+  balance: BigInt!
 }
