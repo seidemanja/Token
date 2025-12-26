@@ -1,0 +1,14 @@
+{
+  "lastProcessedTransferBlock": 9904310,
+  "lastProcessedSwapBlock": 9906328,
+  "cumulativeBuys": {
+    "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": "5342788753527919688433",
+    "0x70997970c51812dc3a010c7d01b50e0d17dc79c8": "781397350124303060249",
+    "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc": "754522327422704807485"
+  },
+  "mintedCache": {
+    "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": true,
+    "0x70997970c51812dc3a010c7d01b50e0d17dc79c8": true,
+    "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc": true
+  }
+}

@@ -1,7 +1,15 @@
 import { ethers } from "hardhat";
 import { UNISWAP_SEPOLIA } from "../../config/uniswap.sepolia";
 
+// Shared env resolver (network-aware)
+const {
+  network,
+  TOKEN_ADDRESS,
+} = require("../env");
+
 const FEE = 3000;
+
+/* ------------------------- math helpers ------------------------- */
 
 function sqrtBigInt(value: bigint): bigint {
   if (value < 0n) throw new Error("sqrt negative");
@@ -20,10 +28,23 @@ function encodeSqrtPriceX96(amount1: bigint, amount0: bigint): bigint {
   return sqrtBigInt(ratioX192);
 }
 
-async function main() {
-  const tokenAddress = process.env.TOKEN_ADDRESS;
-  if (!tokenAddress) throw new Error("Set TOKEN_ADDRESS env var");
+/* ------------------------- main ------------------------- */
 
+async function main() {
+  console.log(`Creating / initializing pool (network=${network})`);
+
+  const tokenAddress = TOKEN_ADDRESS;
+  if (!tokenAddress) {
+    throw new Error("TOKEN_ADDRESS not resolved from env.js");
+  }
+
+  console.log("Resolved TOKEN_ADDRESS:", tokenAddress);
+  console.log("process.env.LOCAL_TOKEN_ADDRESS:", process.env.LOCAL_TOKEN_ADDRESS);
+  console.log("process.env.SEPOLIA_TOKEN_ADDRESS:", process.env.SEPOLIA_TOKEN_ADDRESS);
+
+  // NOTE:
+  // For now, you are intentionally using UNISWAP_SEPOLIA config
+  // even on localhost (forked or simulated). This is fine and intentional.
   const factory = await ethers.getContractAt(
     "IUniswapV3FactoryMinimal",
     UNISWAP_SEPOLIA.factory
@@ -32,7 +53,9 @@ async function main() {
   const weth = UNISWAP_SEPOLIA.weth;
 
   let poolAddress = await factory.getPool(tokenAddress, weth, FEE);
+
   if (poolAddress === ethers.ZeroAddress) {
+    console.log("Pool does not exist yet. Creating...");
     const tx = await factory.createPool(tokenAddress, weth, FEE);
     await tx.wait();
     poolAddress = await factory.getPool(tokenAddress, weth, FEE);
@@ -40,10 +63,14 @@ async function main() {
 
   console.log("POOL_ADDRESS:", poolAddress);
 
-  const pool = await ethers.getContractAt("IUniswapV3PoolMinimal", poolAddress);
+  const pool = await ethers.getContractAt(
+    "IUniswapV3PoolMinimal",
+    poolAddress
+  );
 
   const token0 = (await pool.token0()).toLowerCase();
   const token1 = (await pool.token1()).toLowerCase();
+
   const TOKEN = tokenAddress.toLowerCase();
   const WETH = weth.toLowerCase();
 
@@ -52,11 +79,11 @@ async function main() {
   let amount1: bigint;
 
   if (token0 === TOKEN && token1 === WETH) {
-    // price = WETH/TOKEN = 1e-7
+    // price = WETH / TOKEN = 1e-7
     amount0 = 10n ** 18n; // 1 TOKEN
     amount1 = 10n ** 11n; // 1e-7 WETH
   } else if (token0 === WETH && token1 === TOKEN) {
-    // price = TOKEN/WETH = 1e7
+    // price = TOKEN / WETH = 1e7
     amount0 = 10n ** 18n; // 1 WETH
     amount1 = 10n ** 25n; // 1e7 TOKEN
   } else {
@@ -67,10 +94,14 @@ async function main() {
 
   const slot0 = await pool.slot0();
   if (slot0.sqrtPriceX96 !== 0n) {
-    console.log("Already initialized. sqrtPriceX96:", slot0.sqrtPriceX96.toString());
+    console.log(
+      "Pool already initialized. sqrtPriceX96:",
+      slot0.sqrtPriceX96.toString()
+    );
     return;
   }
 
+  console.log("Initializing pool...");
   const initTx = await pool.initialize(sqrtPriceX96);
   await initTx.wait();
 
