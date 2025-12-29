@@ -5,16 +5,25 @@
  * - Swap-driven eligibility + cumulative buy tracking (IMPLEMENTED)
  * - ERC-20 Transfer + balanceOf eligibility (legacy, optional; DISABLED by default)
  *
- * Swap-driven rule (for your current pool where your token is token0):
- * - If Swap.amount0 < 0, recipient received token0 => "buy" of your token
- * - tokenBought = -amount0
- * - Accumulate tokenBought per recipient
- * - Mint once when cumulativeBuys[recipient] >= threshold AND cohort gate passes
+ * Swap-driven rule:
+ * - Determine which pool token is the tracked TOKEN_ADDRESS (token0 or token1).
+ * - If tracked token is token0:
+ *     buy => pool sends token0 to recipient => amount0 < 0 => tokenBought = -amount0
+ * - If tracked token is token1:
+ *     buy => pool sends token1 to recipient => amount1 < 0 => tokenBought = -amount1
+ * - Accumulate tokenBought per recipient (in base units, stored as decimal strings).
+ * - Mint once when cumulativeBuys[recipient] >= threshold AND cohort gate passes.
+ *
+ * Operational hardening added:
+ * - mintFailures + cooldown to avoid spamming retries when minting fails (e.g., out of gas/ETH).
+ * - optional setting to suppress throwing on mint failures (keeps backfill loop clean).
  *
  * Env vars:
  * - LEGACY_BALANCE_MINT_ENABLED=true|false (default false)
  * - SWAP_MINT_ENABLED=true|false (default true)
  * - THRESHOLD_TOKENS (interpreted in TOKEN_DECIMALS)
+ * - MINT_FAILURE_COOLDOWN_MS (default 60000)
+ * - THROW_ON_MINT_FAILURE=true|false (default false)
  */
 
 require("dotenv").config();
@@ -55,9 +64,9 @@ function loadState(path) {
     const s = JSON.parse(fs.readFileSync(path, "utf8"));
 
     // Backward-compatible migration:
-    // old: { lastProcessedBlock }
-    // newer: { lastProcessedTransferBlock, lastProcessedSwapBlock }
-    // newest: + { cumulativeBuys, mintedCache }
+    // old:    { lastProcessedBlock }
+    // newer:  { lastProcessedTransferBlock, lastProcessedSwapBlock }
+    // newest: + { cumulativeBuys, mintedCache, mintFailures }
     const migrated = {
       lastProcessedTransferBlock:
         typeof s.lastProcessedTransferBlock === "number"
@@ -65,14 +74,21 @@ function loadState(path) {
           : typeof s.lastProcessedBlock === "number"
             ? s.lastProcessedBlock
             : 0,
+
       lastProcessedSwapBlock:
         typeof s.lastProcessedSwapBlock === "number" ? s.lastProcessedSwapBlock : 0,
 
       // BigInt values stored as decimal strings
-      cumulativeBuys: typeof s.cumulativeBuys === "object" && s.cumulativeBuys ? s.cumulativeBuys : {},
+      cumulativeBuys:
+        typeof s.cumulativeBuys === "object" && s.cumulativeBuys ? s.cumulativeBuys : {},
 
-      // optional: local cache to avoid repeated hasMinted checks on hot paths
-      mintedCache: typeof s.mintedCache === "object" && s.mintedCache ? s.mintedCache : {},
+      // Optional: local cache to avoid repeated hasMinted checks on hot paths
+      mintedCache:
+        typeof s.mintedCache === "object" && s.mintedCache ? s.mintedCache : {},
+
+      // New: record mint failures to avoid retry spam (values are ms timestamps as strings)
+      mintFailures:
+        typeof s.mintFailures === "object" && s.mintFailures ? s.mintFailures : {},
     };
 
     return migrated;
@@ -82,6 +98,7 @@ function loadState(path) {
       lastProcessedSwapBlock: 0,
       cumulativeBuys: {},
       mintedCache: {},
+      mintFailures: {},
     };
   }
 }
@@ -161,6 +178,10 @@ async function main() {
   const chunkSize = envInt("CHUNK_SIZE", 1000);
   const minBackfillIntervalMs = envInt("MIN_BACKFILL_INTERVAL_MS", 2000);
 
+  // New operational knobs
+  const mintFailureCooldownMs = envInt("MINT_FAILURE_COOLDOWN_MS", 60_000);
+  const throwOnMintFailure = envBool("THROW_ON_MINT_FAILURE", false);
+
   const cohortEnabled = envBool("COHORT_ENABLED", true);
   const cohortEligiblePercent = envInt("COHORT_ELIGIBLE_PERCENT", 50);
   const cohortSalt = (process.env.COHORT_SALT || "").trim();
@@ -213,6 +234,8 @@ async function main() {
   console.log("Legacy balance mint enabled:", legacyMintEnabled);
   console.log("Swap mint enabled:", swapMintEnabled);
   console.log("Threshold (raw):", threshold.toString(), `(decimals=${decimals})`);
+  console.log("Mint failure cooldown (ms):", mintFailureCooldownMs);
+  console.log("Throw on mint failure:", throwOnMintFailure);
 
   if (cohortEnabled && !cohortSalt) {
     throw new Error("COHORT_ENABLED=true but COHORT_SALT missing");
@@ -254,8 +277,11 @@ async function main() {
     if (bal < threshold) return;
 
     console.log(`[LEGACY ELIGIBLE] ${to} block=${blockNumber}`);
+
+    // Legacy path is optional; keep behavior simple (throwing is acceptable here).
     const tx = await nft.mint(to);
     await tx.wait();
+
     state.mintedCache[toL] = true;
     saveState(STATE_FILE, state);
     console.log(`[LEGACY MINTED] ${to}`);
@@ -342,10 +368,18 @@ async function main() {
   async function maybeMintFromCumulativeBuys(buyer, blockNumber) {
     if (!swapMintEnabled) return;
 
+    // Basic hygiene checks
     if (!ethers.isAddress(buyer) || buyer === ethers.ZeroAddress) return;
     if (!isInEligibleCohort(buyer, cohortEnabled, cohortEligiblePercent, cohortSalt)) return;
 
     const buyerL = toLowerAddr(buyer);
+
+    // Cooldown: if we recently failed to mint for this buyer, do not spam retries.
+    const nowMs = Date.now();
+    const lastFailMs = state.mintFailures[buyerL] ? parseInt(state.mintFailures[buyerL], 10) : 0;
+    if (lastFailMs && nowMs - lastFailMs < mintFailureCooldownMs) {
+      return;
+    }
 
     // If cache says minted, verify it against chain.
     // Cache is only a performance hint, never a source of truth.
@@ -353,12 +387,12 @@ async function main() {
       const already = await nft.hasMinted(buyer);
       if (already) return;
 
-      // cache was wrong; clear it and continue
+      // Cache was wrong; clear it and continue.
       delete state.mintedCache[buyerL];
       saveState(STATE_FILE, state);
     }
 
-    // on-chain guard (authoritative)
+    // On-chain guard (authoritative)
     const already = await nft.hasMinted(buyer);
     if (already) {
       state.mintedCache[buyerL] = true;
@@ -366,19 +400,36 @@ async function main() {
       return;
     }
 
-
+    // Threshold check
     const cum = parseBigintSafe(state.cumulativeBuys[buyerL] || "0");
     if (cum < threshold) return;
 
-    console.log(`[SWAP ELIGIBLE] ${buyer} block=${blockNumber} cumulativeBuys=${cum.toString()}`);
+    console.log(
+      `[SWAP ELIGIBLE] ${buyer} block=${blockNumber} cumulativeBuys=${cum.toString()}`
+    );
 
-    const tx = await nft.mint(buyer);
-    console.log(`[MINT SENT] to=${buyer} tx=${tx.hash}`);
-    const receipt = await tx.wait();
-    console.log(`[MINT CONFIRMED] to=${buyer} tx=${receipt.hash}`);
+    // Attempt mint; on failure, record timestamp for cooldown.
+    try {
+      const tx = await nft.mint(buyer);
+      console.log(`[MINT SENT] to=${buyer} tx=${tx.hash}`);
+      const receipt = await tx.wait();
+      console.log(`[MINT CONFIRMED] to=${buyer} tx=${receipt.hash}`);
 
-    state.mintedCache[buyerL] = true;
-    saveState(STATE_FILE, state);
+      state.mintedCache[buyerL] = true;
+      delete state.mintFailures[buyerL]; // clear failures on success
+      saveState(STATE_FILE, state);
+    } catch (e) {
+      // Record failure and optionally keep running quietly.
+      state.mintFailures[buyerL] = String(Date.now());
+      saveState(STATE_FILE, state);
+
+      console.error(
+        `[MINT FAILED] to=${buyer} reason=${e?.shortMessage || e?.message || e}`
+      );
+
+      // If you want strict behavior, set THROW_ON_MINT_FAILURE=true.
+      if (throwOnMintFailure) throw e;
+    }
   }
 
   async function backfillSwaps() {
@@ -404,7 +455,10 @@ async function main() {
         );
 
         // Swap-driven accounting
-        const buyer = recipient; // for Uniswap V3, recipient receives output token
+        // For Uniswap V3, recipient receives the output token.
+        const buyer = recipient;
+
+        // Only count "buys" of the tracked token.
         const tokenBought = getTokenBoughtFromSwap(amount0, amount1);
         if (tokenBought > 0n) {
           const buyerL = toLowerAddr(buyer);
@@ -412,8 +466,7 @@ async function main() {
           const next = prev + tokenBought;
           state.cumulativeBuys[buyerL] = next.toString();
 
-          // Mint check (only when crossing or above threshold)
-          // Note: still safe due to hasMinted guard.
+          // Mint check (still safe due to hasMinted guard).
           await maybeMintFromCumulativeBuys(buyer, log.blockNumber);
         }
       }
@@ -446,10 +499,12 @@ async function main() {
       if (legacyMintEnabled) await backfillTransfers();
       await backfillSwaps();
     } catch (e) {
-      console.error("[BACKFILL ERROR]", e);
+      // This is now expected to be quieter because mint failures are handled per-wallet.
+      console.error("[BACKFILL ERROR]", e?.shortMessage || e?.message || e);
     }
   });
 
+  // If the websocket drops, exit so a supervisor can restart the process.
   wsProvider.websocket.on("close", () => process.exit(1));
   wsProvider.websocket.on("error", () => process.exit(1));
 }
