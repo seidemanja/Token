@@ -27,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import subprocess
 import sys
@@ -94,6 +95,30 @@ def _set_run_stats_window(conn: sqlite3.Connection, start_block: int, end_block:
     conn.commit()
 
 
+def _set_blocks_per_day(conn: sqlite3.Connection, run_dir: Path, start_block: int, end_block: int) -> None:
+    """
+    Derive blocks_per_day from manifest num_days when available.
+    Fallback to 100 if we cannot compute a sensible value.
+    """
+    blocks_per_day = 100
+    manifest = run_dir / "manifest.json"
+    if manifest.exists():
+        try:
+            data = json.loads(manifest.read_text())
+            num_days = int(data.get("num_days", 0))
+            if num_days > 0 and end_block > start_block:
+                blocks_per_day = max(1, (int(end_block) - int(start_block)) // num_days)
+        except Exception:
+            pass
+
+    _ensure_run_stats(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO run_stats(key, value) VALUES (?,?)",
+        ("blocks_per_day", str(int(blocks_per_day))),
+    )
+    conn.commit()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("db_path", help="Path to sim.db")
@@ -137,6 +162,7 @@ def main() -> None:
     conn = sqlite3.connect(str(db_path))
     try:
         _set_run_stats_window(conn, meta["run_start_block"], meta["run_end_block"])
+        _set_blocks_per_day(conn, run_dir, meta["run_start_block"], meta["run_end_block"])
     finally:
         conn.close()
 
@@ -152,9 +178,17 @@ def main() -> None:
         ]
     )
 
-    # 4) prices
-    print("Running compute_prices ...")
-    _run([sys.executable, "-m", "sim.compute_prices", str(db_path)])
+    # 4) prices (only if swaps exist)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        swap_count = conn.execute("SELECT COUNT(1) FROM swaps").fetchone()[0]
+    finally:
+        conn.close()
+    if swap_count:
+        print("Running compute_prices ...")
+        _run([sys.executable, "-m", "sim.compute_prices", str(db_path)])
+    else:
+        print("No swaps found; skipping compute_prices.")
 
     # 5) run-scoped mint extraction
     print("Running extract_mints (run-scoped) ...")
@@ -169,9 +203,26 @@ def main() -> None:
         ]
     )
 
-    # 6) wallet activity
+    # 6) cohort + mint daily stats
+    print("Running compute_cohort_stats ...")
+    _run([sys.executable, "-m", "sim.compute_cohort_stats", str(db_path), "--run-id", run_id])
+
+    # 7) wallet activity
     print("Running compute_wallet_activity ...")
     _run([sys.executable, "-m", "sim.compute_wallet_activity", str(db_path)])
+
+    # 8) wallet balances (holder counts + concentration diagnostics)
+    print("Running compute_wallet_balances ...")
+    _run([sys.executable, "-m", "sim.compute_wallet_balances", str(db_path), "--run-id", run_id])
+
+    # 9) append to warehouse for cross-run analytics
+    print("Appending run to warehouse ...")
+    _run([sys.executable, "-m", "sim.append_to_warehouse", "--run-db", str(db_path)])
+
+    # 10) generate cross-run report plots (use run_id to align folder naming)
+    report_outdir = Path("sim/reports") / run_id
+    print(f"Generating cross-run report ... ({report_outdir})")
+    _run([sys.executable, "-m", "sim.report", "--outdir", str(report_outdir)])
 
     print("post_run complete.")
 

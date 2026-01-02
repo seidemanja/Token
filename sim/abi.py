@@ -45,6 +45,12 @@ def weth_artifact_path() -> str:
     ])
 
 
+def erc20_artifact_path() -> str:
+    return _find_first_existing([
+        "artifacts/@openzeppelin/contracts/token/ERC20/IERC20.sol/IERC20.json",
+    ])
+
+
 def pool_artifact_path() -> str:
     return _find_first_existing([
         "artifacts/contracts/interfaces/IUniswapV3PoolMinimal.sol/IUniswapV3PoolMinimal.json",

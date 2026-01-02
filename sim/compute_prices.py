@@ -138,7 +138,11 @@ def main() -> None:
     else:
         day0_block = int(day0_block_s)
 
-    blocks_per_day = 100
+    blocks_per_day_s = get_run_stat(conn, "blocks_per_day")
+    blocks_per_day = int(blocks_per_day_s) if blocks_per_day_s else 100
+    if blocks_per_day <= 0:
+        blocks_per_day = 100
+    set_run_stat(conn, "blocks_per_day", str(blocks_per_day))
 
     # --- Pass 1: compute price for all swaps and group prices by computed day ---
     all_rows: list[tuple[int, str, int, str, int, float, int]] = []

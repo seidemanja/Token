@@ -56,6 +56,7 @@ class SimDB:
               address TEXT NOT NULL,
               private_key TEXT NOT NULL,
               executor TEXT,
+              agent_type TEXT DEFAULT 'retail',
               PRIMARY KEY (run_id, agent_id)
             );
 
@@ -75,6 +76,57 @@ class SimDB:
               gas_used INTEGER,
               created_at_utc TEXT DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS fair_value_daily (
+              run_id TEXT NOT NULL,
+              day INTEGER NOT NULL,
+              fair_value REAL NOT NULL,
+              PRIMARY KEY (run_id, day)
+            );
+
+            CREATE TABLE IF NOT EXISTS perceived_fair_value_daily (
+              run_id TEXT NOT NULL,
+              day INTEGER NOT NULL,
+              avg_perceived_log REAL NOT NULL,
+              PRIMARY KEY (run_id, day)
+            );
+
+            CREATE TABLE IF NOT EXISTS circulating_supply_daily (
+              run_id TEXT NOT NULL,
+              day INTEGER NOT NULL,
+              circulating_supply REAL NOT NULL,
+              PRIMARY KEY (run_id, day)
+            );
+
+            CREATE TABLE IF NOT EXISTS run_factors_daily (
+              run_id TEXT NOT NULL,
+              day INTEGER NOT NULL,
+              sentiment REAL NOT NULL,
+              fair_value REAL NOT NULL,
+              launch_mult REAL NOT NULL,
+              price_norm REAL,
+              PRIMARY KEY (run_id, day)
+            );
+
+            CREATE TABLE IF NOT EXISTS trade_cap_daily (
+              run_id TEXT NOT NULL,
+              day INTEGER NOT NULL,
+              side TEXT NOT NULL,
+              trade_count INTEGER NOT NULL,
+              cap_hits INTEGER NOT NULL,
+              PRIMARY KEY (run_id, day, side)
+            );
+
+            CREATE TABLE IF NOT EXISTS cohort_daily_stats (
+              run_id TEXT NOT NULL,
+              day INTEGER NOT NULL,
+              eligible_wallets INTEGER NOT NULL,
+              control_wallets INTEGER NOT NULL,
+              minted_eligible INTEGER NOT NULL,
+              minted_control INTEGER NOT NULL,
+              minted_total INTEGER NOT NULL,
+              PRIMARY KEY (run_id, day)
+            );
             """
         )
 
@@ -84,6 +136,9 @@ class SimDB:
             self.conn.execute("ALTER TABLE sim_runs ADD COLUMN run_start_block INTEGER;")
         if "run_end_block" not in cols:
             self.conn.execute("ALTER TABLE sim_runs ADD COLUMN run_end_block INTEGER;")
+        cols_agents = [r[1] for r in self.conn.execute("PRAGMA table_info(agents);").fetchall()]
+        if "agent_type" not in cols_agents:
+            self.conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT DEFAULT 'retail';")
 
         self.conn.commit()
 
@@ -144,13 +199,21 @@ class SimDB:
             )
         return int(row[0]), int(row[1])
 
-    def upsert_agent(self, run_id: str, agent_id: int, address: str, private_key: str, executor: Optional[str]) -> None:
+    def upsert_agent(
+        self,
+        run_id: str,
+        agent_id: int,
+        address: str,
+        private_key: str,
+        executor: Optional[str],
+        agent_type: str,
+    ) -> None:
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO agents(run_id, agent_id, address, private_key, executor)
-            VALUES (?,?,?,?,?)
+            INSERT OR REPLACE INTO agents(run_id, agent_id, address, private_key, executor, agent_type)
+            VALUES (?,?,?,?,?,?)
             """,
-            (run_id, int(agent_id), address.lower(), private_key, (executor or "")),
+            (run_id, int(agent_id), address.lower(), private_key, (executor or ""), agent_type),
         )
         self.conn.commit()
 
@@ -189,5 +252,70 @@ class SimDB:
                 (int(block_number) if block_number is not None else None),
                 (int(gas_used) if gas_used is not None else None),
             ),
+        )
+        self.conn.commit()
+
+    def insert_fair_value(self, run_id: str, day: int, fair_value: float) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO fair_value_daily(run_id, day, fair_value)
+            VALUES (?,?,?)
+            """,
+            (run_id, int(day), float(fair_value)),
+        )
+        self.conn.commit()
+
+    def insert_perceived_fair_value(self, run_id: str, day: int, avg_perceived_log: float) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO perceived_fair_value_daily(run_id, day, avg_perceived_log)
+            VALUES (?,?,?)
+            """,
+            (run_id, int(day), float(avg_perceived_log)),
+        )
+        self.conn.commit()
+
+    def insert_circulating_supply(self, run_id: str, day: int, circulating_supply: float) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO circulating_supply_daily(run_id, day, circulating_supply)
+            VALUES (?,?,?)
+            """,
+            (run_id, int(day), float(circulating_supply)),
+        )
+        self.conn.commit()
+
+    def insert_run_factors(
+        self,
+        run_id: str,
+        day: int,
+        sentiment: float,
+        fair_value: float,
+        launch_mult: float,
+        price_norm: Optional[float],
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO run_factors_daily(run_id, day, sentiment, fair_value, launch_mult, price_norm)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (
+                run_id,
+                int(day),
+                float(sentiment),
+                float(fair_value),
+                float(launch_mult),
+                (float(price_norm) if price_norm is not None else None),
+            ),
+        )
+        self.conn.commit()
+
+    def insert_trade_cap_daily(self, run_id: str, day: int, side: str, trade_count: int, cap_hits: int) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO trade_cap_daily(run_id, day, side, trade_count, cap_hits)
+            VALUES (?,?,?,?,?)
+            """,
+            (run_id, int(day), side, int(trade_count), int(cap_hits)),
         )
         self.conn.commit()
