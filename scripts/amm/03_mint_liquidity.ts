@@ -32,9 +32,9 @@ async function main() {
   );
 
   // For fork: fine. For real Sepolia: also ok with faucet constraints.
-  const wethToWrap   = ethers.parseEther("0.02");
+  const wethToWrap   = ethers.parseEther("0.5");
   // const tokenAmount  = ethers.parseUnits("200000", 18);
-  const tokenAmount = ethers.parseUnits("50000", 18);
+  const tokenAmount = ethers.parseUnits("5000000", 18);
 
   // Wrap ETH → WETH
   await (await weth.deposit({ value: wethToWrap })).wait();
@@ -69,7 +69,7 @@ async function main() {
     amount0Min: 0,
     amount1Min: 0,
     recipient: deployer.address,
-    deadline: Math.floor(Date.now() / 1000) + 600,
+    deadline: ((await ethers.provider.getBlock("latest"))?.timestamp ?? Math.floor(Date.now() / 1000)) + 600,
   };
 
   await npm.mint.staticCall(params);

@@ -128,7 +128,9 @@ def main() -> None:
 
     print(f"Extracting swaps from block {from_block} to {to_block} ...")
 
-    logs = swap_event.get_logs(from_block=from_block, to_block=to_block)
+    # web3.py 5.x expects fromBlock/toBlock; 6.x accepts from_block/to_block.
+    # Use the camelCase kwargs for compatibility with older installed versions.
+    logs = swap_event.get_logs(fromBlock=from_block, toBlock=to_block)
 
     # Insert swaps
     inserted = 0
@@ -187,7 +189,11 @@ def main() -> None:
     # ----------------------------
     # Rebuild daily aggregates deterministically
     # ----------------------------
-    blocks_per_day = 100  # local assumption; adjust later
+    blocks_per_day_s = get_run_stat(conn, "blocks_per_day")
+    blocks_per_day = int(blocks_per_day_s) if blocks_per_day_s else 100
+    if blocks_per_day <= 0:
+        blocks_per_day = 100
+    set_run_stat(conn, "blocks_per_day", str(int(blocks_per_day)))
     print(f"Computing daily aggregates using blocks_per_day={blocks_per_day}...")
 
     # IMPORTANT:

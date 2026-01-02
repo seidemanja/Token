@@ -29,6 +29,12 @@
 require("dotenv").config();
 const fs = require("fs");
 const { ethers } = require("ethers");
+let sqlite3 = null;
+try {
+  sqlite3 = require("sqlite3");
+} catch {
+  sqlite3 = null;
+}
 
 /* ------------------------- shared env ------------------------- */
 
@@ -126,6 +132,67 @@ function parseBigintSafe(x) {
   return 0n;
 }
 
+function openSqlite(path) {
+  if (!sqlite3 || !path) return null;
+  const db = new sqlite3.Database(path);
+  db.serialize(() => {
+    db.run(
+      `
+      CREATE TABLE IF NOT EXISTS controller_swaps (
+        block_number INTEGER NOT NULL,
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        sender TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        amount0 TEXT NOT NULL,
+        amount1 TEXT NOT NULL,
+        sqrt_price_x96 TEXT NOT NULL,
+        liquidity TEXT NOT NULL,
+        tick INTEGER NOT NULL,
+        token_bought_raw TEXT NOT NULL,
+        PRIMARY KEY (tx_hash, log_index)
+      );
+      `
+    );
+    db.run(
+      `
+      CREATE TABLE IF NOT EXISTS controller_transfers (
+        block_number INTEGER NOT NULL,
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        from_address TEXT NOT NULL,
+        to_address TEXT NOT NULL,
+        value_raw TEXT NOT NULL,
+        PRIMARY KEY (tx_hash, log_index)
+      );
+      `
+    );
+    db.run(
+      `
+      CREATE TABLE IF NOT EXISTS controller_mints (
+        block_number INTEGER NOT NULL,
+        tx_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        to_address TEXT NOT NULL,
+        token_id TEXT NOT NULL,
+        PRIMARY KEY (tx_hash, log_index)
+      );
+      `
+    );
+  });
+  return db;
+}
+
+function dbRun(db, sql, params) {
+  if (!db) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 /* ------------------------- ABIs ------------------------- */
 
 const ERC20_ABI = [
@@ -170,6 +237,7 @@ async function main() {
 
   const legacyMintEnabled = envBool("LEGACY_BALANCE_MINT_ENABLED", false);
   const swapMintEnabled = envBool("SWAP_MINT_ENABLED", true);
+  const indexTransfers = envBool("CONTROLLER_INDEX_TRANSFERS", false);
 
   const decimals = parseInt(process.env.TOKEN_DECIMALS || "18", 10);
   const threshold = ethers.parseUnits(process.env.THRESHOLD_TOKENS || "0", decimals);
@@ -185,6 +253,12 @@ async function main() {
   const cohortEnabled = envBool("COHORT_ENABLED", true);
   const cohortEligiblePercent = envInt("COHORT_ELIGIBLE_PERCENT", 50);
   const cohortSalt = (process.env.COHORT_SALT || "").trim();
+
+  const sqlitePath = (process.env.CONTROLLER_SQLITE_PATH || "").trim();
+  const sqliteDb = openSqlite(sqlitePath);
+  if (sqlitePath && !sqliteDb) {
+    console.warn("CONTROLLER_SQLITE_PATH set, but sqlite3 module not available.");
+  }
 
   const pk = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
 
@@ -236,6 +310,10 @@ async function main() {
   console.log("Threshold (raw):", threshold.toString(), `(decimals=${decimals})`);
   console.log("Mint failure cooldown (ms):", mintFailureCooldownMs);
   console.log("Throw on mint failure:", throwOnMintFailure);
+  console.log("Index transfers:", indexTransfers);
+  if (sqliteDb) {
+    console.log("SQLite indexer enabled:", sqlitePath);
+  }
 
   if (cohortEnabled && !cohortSalt) {
     throw new Error("COHORT_ENABLED=true but COHORT_SALT missing");
@@ -304,7 +382,7 @@ async function main() {
   }
 
   async function backfillTransfers() {
-    if (!legacyMintEnabled) return;
+    if (!legacyMintEnabled && !indexTransfers) return;
 
     const current = await httpProvider.getBlockNumber();
     const target = current - confirmations;
@@ -316,7 +394,23 @@ async function main() {
       const logs = await queryTransferLogs(from, to);
 
       for (const log of logs) {
-        await handleEligibleLegacy(log.args.to, log.blockNumber);
+        if (legacyMintEnabled) {
+          await handleEligibleLegacy(log.args.to, log.blockNumber);
+        }
+        await dbRun(
+          sqliteDb,
+          `INSERT OR IGNORE INTO controller_transfers
+           (block_number, tx_hash, log_index, from_address, to_address, value_raw)
+           VALUES (?,?,?,?,?,?)`,
+          [
+            log.blockNumber,
+            log.transactionHash,
+            log.logIndex,
+            toLowerAddr(log.args.from),
+            toLowerAddr(log.args.to),
+            log.args.value?.toString?.() || String(log.args.value),
+          ]
+        );
       }
 
       state.lastProcessedTransferBlock = to;
@@ -415,6 +509,36 @@ async function main() {
       const receipt = await tx.wait();
       console.log(`[MINT CONFIRMED] to=${buyer} tx=${receipt.hash}`);
 
+      if (sqliteDb) {
+        let mintedTokenId = null;
+        let logIndex = 0;
+        for (const log of receipt.logs || []) {
+          try {
+            const parsed = nft.interface.parseLog(log);
+            if (parsed?.name === "Transfer" && parsed?.args?.to?.toLowerCase() === buyer.toLowerCase()) {
+              mintedTokenId = parsed.args.tokenId?.toString?.() || String(parsed.args.tokenId);
+              logIndex = log.logIndex || 0;
+              break;
+            }
+          } catch {
+            continue;
+          }
+        }
+        await dbRun(
+          sqliteDb,
+          `INSERT OR IGNORE INTO controller_mints
+           (block_number, tx_hash, log_index, to_address, token_id)
+           VALUES (?,?,?,?,?)`,
+          [
+            receipt.blockNumber || blockNumber,
+            receipt.hash || receipt.transactionHash || tx.hash,
+            logIndex,
+            toLowerAddr(buyer),
+            mintedTokenId || "0",
+          ]
+        );
+      }
+
       state.mintedCache[buyerL] = true;
       delete state.mintFailures[buyerL]; // clear failures on success
       saveState(STATE_FILE, state);
@@ -446,6 +570,10 @@ async function main() {
         const recipient = (log.args.recipient || "").toString();
         const amount0 = log.args.amount0;
         const amount1 = log.args.amount1;
+        const sender = (log.args.sender || "").toString();
+        const sqrtPriceX96 = log.args.sqrtPriceX96;
+        const liquidity = log.args.liquidity;
+        const tick = log.args.tick;
 
         // Always print ingestion proof line
         console.log(
@@ -469,6 +597,26 @@ async function main() {
           // Mint check (still safe due to hasMinted guard).
           await maybeMintFromCumulativeBuys(buyer, log.blockNumber);
         }
+
+        await dbRun(
+          sqliteDb,
+          `INSERT OR IGNORE INTO controller_swaps
+           (block_number, tx_hash, log_index, sender, recipient, amount0, amount1, sqrt_price_x96, liquidity, tick, token_bought_raw)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            log.blockNumber,
+            log.transactionHash,
+            log.logIndex,
+            toLowerAddr(sender),
+            toLowerAddr(recipient),
+            fmtI256(amount0),
+            fmtI256(amount1),
+            sqrtPriceX96?.toString?.() || String(sqrtPriceX96),
+            liquidity?.toString?.() || String(liquidity),
+            Number(tick),
+            tokenBought.toString(),
+          ]
+        );
       }
 
       state.lastProcessedSwapBlock = to;
@@ -482,7 +630,12 @@ async function main() {
   if (legacyMintEnabled) {
     await backfillTransfers();
   } else {
-    console.log("Legacy balance-mint path disabled; skipping ERC-20 Transfer backfill.");
+    if (indexTransfers) {
+      console.log("Legacy balance-mint path disabled; indexing transfers only.");
+      await backfillTransfers();
+    } else {
+      console.log("Legacy balance-mint path disabled; skipping ERC-20 Transfer backfill.");
+    }
   }
 
   await backfillSwaps();
@@ -496,7 +649,7 @@ async function main() {
     lastRun = now;
 
     try {
-      if (legacyMintEnabled) await backfillTransfers();
+      if (legacyMintEnabled || indexTransfers) await backfillTransfers();
       await backfillSwaps();
     } catch (e) {
       // This is now expected to be quieter because mint failures are handled per-wallet.

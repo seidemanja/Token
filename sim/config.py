@@ -15,31 +15,16 @@ NEW (Step 27):
 These caps are enforced in run_sim.py (next step) to prevent pathological
 price jumps in thin Uniswap V3 liquidity.
 """
-
+from __future__ import annotations
 import os
 from dataclasses import dataclass
+from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Always load .env from repo root reliably (no find_dotenv() stack-frame issues)
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(dotenv_path=ENV_PATH)
-
-
-
-
-# sim/config.py
-import os
-from dataclasses import dataclass
-from pathlib import Path
-from dotenv import load_dotenv
-
-# Always load .env from repo root reliably (no find_dotenv() stack-frame issues)
-ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
-load_dotenv(dotenv_path=ENV_PATH)
-
-
-
 def _must(name: str) -> str:
     """Fetch a required environment variable."""
     v = os.getenv(name)
@@ -48,7 +33,7 @@ def _must(name: str) -> str:
     return v
 
 
-def _opt(name: str) -> str | None:
+def _opt(name: str) -> "Optional[str]":
     """Fetch an optional environment variable."""
     v = os.getenv(name)
     return v if v else None
@@ -64,7 +49,7 @@ def _by_network(local_key: str, sepolia_key: str) -> str:
     raise ValueError(f"Unsupported NETWORK={network}")
 
 
-def _by_network_opt(local_key: str, sepolia_key: str) -> str | None:
+def _by_network_opt(local_key: str, sepolia_key: str) -> "Optional[str]":
     """Resolve an optional value based on NETWORK=local|sepolia."""
     network = (os.getenv("NETWORK") or "local").lower().strip()
     if network == "local":
@@ -103,7 +88,7 @@ class SimConfig:
     pool_token0: str
     pool_token1: str
     weth: str  # derived from pool token0/token1 unless overridden
-    jstvip: str | None
+    jstvip: "Optional[str]"
 
     # Simulation parameters
     num_agents: int
@@ -113,20 +98,69 @@ class SimConfig:
     agent_start_weth: float
     agent_start_token: float
 
-    # Phase-0 random policy parameters
-    trade_prob: float
-    buy_prob: float
-    sell_prob: float
-
-    buy_weth_min: float
-    buy_weth_max: float
-    sell_token_min: float
-    sell_token_max: float
-
-    # NEW: Hard safety caps (Step 27)
+    # NEW: Hard safety caps
     # These are *absolute* caps applied right before trade execution.
     max_buy_weth: float
     max_sell_token: float
+
+    # Regime + sentiment
+    regime_p11: float
+    regime_p00: float
+    sentiment_alpha: float
+    sentiment_mu_bear: float
+    sentiment_mu_bull: float
+
+    # Fair value (log) process
+    fair_value_start: float
+    fair_value_mu: float
+    fair_value_beta: float
+    fair_value_sigma: float
+    fair_value_floor: float
+
+    # Perceived value + launch premium
+    perceived_bias_sigma: float
+    perceived_idio_rho: float
+    perceived_idio_sigma: float
+    launch_premium_l0: float
+    launch_premium_tau: float
+
+    # Mispricing + trade size
+    mispricing_theta: float
+    trade_q0: float
+    trade_qmax: float
+    size_logn_mean: float
+    size_logn_sigma: float
+
+    # Activity model
+    activity_base: float
+    activity_sentiment_scale: float
+    activity_launch_scale: float
+
+    # Holder entry/churn model
+    entry_lambda0: float
+    entry_k_launch: float
+    entry_k_sentiment: float
+    entry_k_return: float
+    churn_pi0: float
+    churn_c_sentiment: float
+    churn_c_return: float
+
+    entry_agent_eth: float
+    entry_agent_weth: float
+    entry_agent_token: float
+
+    # Circulating supply + liquidity policy
+    circulating_supply_start: float
+    circulating_supply_daily_unlock: float
+    liquidity_policy: str
+
+    # Liquidity-scaled caps
+    max_trade_pct_buy: float
+    max_trade_pct_sell: float
+
+    # Guardrails
+    max_slippage: float
+    amm_fee_pct: float
 
 
 def load_config() -> SimConfig:
@@ -188,16 +222,65 @@ def load_config() -> SimConfig:
         agent_start_weth=_env_float("SIM_AGENT_START_WETH", 10.0),
         agent_start_token=_env_float("SIM_AGENT_START_TOKEN", 1000.0),
 
-        trade_prob=_env_float("SIM_TRADE_PROB", 0.25),
-        buy_prob=_env_float("SIM_BUY_PROB", 0.50),
-        sell_prob=_env_float("SIM_SELL_PROB", 0.50),
-
-        buy_weth_min=_env_float("SIM_BUY_WETH_MIN", 0.01),
-        buy_weth_max=_env_float("SIM_BUY_WETH_MAX", 0.10),
-        sell_token_min=_env_float("SIM_SELL_TOKEN_MIN", 1.0),
-        sell_token_max=_env_float("SIM_SELL_TOKEN_MAX", 50.0),
-
-        # NEW: hard caps (defaults are conservative for local thin liquidity)
+        # Hard caps (defaults are conservative for local thin liquidity)
         max_buy_weth=_env_float("SIM_MAX_BUY_WETH", 0.01),
         max_sell_token=_env_float("SIM_MAX_SELL_TOKEN", 50.0),
+
+        # Regime + sentiment
+        regime_p11=_env_float("SIM_REGIME_P11", 0.90),
+        regime_p00=_env_float("SIM_REGIME_P00", 0.90),
+        sentiment_alpha=_env_float("SIM_SENTIMENT_ALPHA", 0.10),
+        sentiment_mu_bear=_env_float("SIM_SENTIMENT_MU_BEAR", -1.0),
+        sentiment_mu_bull=_env_float("SIM_SENTIMENT_MU_BULL", 1.0),
+
+        # Fair value (log) process
+        fair_value_start=_env_float("SIM_FAIR_VALUE_START", 1.0),
+        fair_value_mu=_env_float("SIM_FAIR_VALUE_MU", 0.0),
+        fair_value_beta=_env_float("SIM_FAIR_VALUE_BETA", 0.10),
+        fair_value_sigma=_env_float("SIM_FAIR_VALUE_SIGMA", 0.01),
+        fair_value_floor=_env_float("SIM_FAIR_VALUE_FLOOR", 0.01),
+
+        # Perceived value + launch premium
+        perceived_bias_sigma=_env_float("SIM_PERCEIVED_BIAS_SIGMA", 0.05),
+        perceived_idio_rho=_env_float("SIM_PERCEIVED_IDIO_RHO", 0.95),
+        perceived_idio_sigma=_env_float("SIM_PERCEIVED_IDIO_SIGMA", 0.01),
+        launch_premium_l0=_env_float("SIM_LAUNCH_PREMIUM_L0", 0.10),
+        launch_premium_tau=_env_float("SIM_LAUNCH_PREMIUM_TAU", 10.0),
+
+        # Mispricing + trade size
+        mispricing_theta=_env_float("SIM_MISPRICING_THETA", 0.02),
+        trade_q0=_env_float("SIM_TRADE_Q0", 1.0),
+        trade_qmax=_env_float("SIM_TRADE_QMAX", 10.0),
+        size_logn_mean=_env_float("SIM_SIZE_LOGN_MEAN", 0.0),
+        size_logn_sigma=_env_float("SIM_SIZE_LOGN_SIGMA", 0.5),
+
+        # Activity model
+        activity_base=_env_float("SIM_ACTIVITY_BASE", 0.25),
+        activity_sentiment_scale=_env_float("SIM_ACTIVITY_SENTIMENT_SCALE", 0.25),
+        activity_launch_scale=_env_float("SIM_ACTIVITY_LAUNCH_SCALE", 0.25),
+
+        # Holder entry/churn model
+        entry_lambda0=_env_float("SIM_ENTRY_LAMBDA0", 1.0),
+        entry_k_launch=_env_float("SIM_ENTRY_K_L", 0.5),
+        entry_k_sentiment=_env_float("SIM_ENTRY_K_S", 0.5),
+        entry_k_return=_env_float("SIM_ENTRY_K_R", 0.5),
+        churn_pi0=_env_float("SIM_CHURN_PI0", 0.01),
+        churn_c_sentiment=_env_float("SIM_CHURN_C_S", 0.5),
+        churn_c_return=_env_float("SIM_CHURN_C_R", 0.5),
+
+        entry_agent_eth=_env_float("SIM_ENTRY_AGENT_ETH", 5.0),
+        entry_agent_weth=_env_float("SIM_ENTRY_AGENT_WETH", 1.0),
+        entry_agent_token=_env_float("SIM_ENTRY_AGENT_TOKEN", 10.0),
+
+        circulating_supply_start=_env_float("SIM_CIRC_SUPPLY_START", 0.0),
+        circulating_supply_daily_unlock=_env_float("SIM_CIRC_SUPPLY_DAILY_UNLOCK", 0.0),
+        liquidity_policy=os.getenv("SIM_LIQUIDITY_POLICY", "fixed").strip().lower(),
+
+        # Liquidity-scaled caps
+        max_trade_pct_buy=_env_float("SIM_MAX_TRADE_PCT_BUY", 0.02),
+        max_trade_pct_sell=_env_float("SIM_MAX_TRADE_PCT_SELL", 0.02),
+
+        # Guardrails
+        max_slippage=_env_float("SIM_MAX_SLIPPAGE", 0.05),
+        amm_fee_pct=_env_float("SIM_AMM_FEE_PCT", 0.003),
     )

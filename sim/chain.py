@@ -23,6 +23,7 @@ from web3 import Web3
 from web3.contract import Contract
 
 from sim.abi import (
+    erc20_artifact_path,
     load_artifact_abi,
     token_artifact_path,
     pool_artifact_path,
@@ -45,6 +46,7 @@ class Agent:
     address: str
     private_key: str
     executor: Optional[str] = None
+    agent_type: str = "retail"
 
 
 def to_wei_amount(amount: float, decimals: int = 18) -> int:
@@ -67,6 +69,7 @@ class Chain:
         self.token_abi = load_artifact_abi(token_artifact_path())
         self.pool_abi = load_artifact_abi(pool_artifact_path())
         self.weth_abi = load_artifact_abi(weth_artifact_path())
+        self.erc20_abi = load_artifact_abi(erc20_artifact_path())
         self.exec_abi = load_artifact_abi(executor_artifact_path())
 
         # Instantiate contracts

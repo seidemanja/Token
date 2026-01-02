@@ -75,7 +75,9 @@ def main() -> None:
 
     print(f"Extracting NFT mints from block {from_block} to {to_block} ...")
 
-    logs = transfer.get_logs(from_block=from_block, to_block=to_block)
+    # web3.py 5.x expects fromBlock/toBlock; 6.x accepts from_block/to_block.
+    # Use the camelCase kwargs for compatibility with older installed versions.
+    logs = transfer.get_logs(fromBlock=from_block, toBlock=to_block)
 
     inserted = 0
     for ev in logs:
