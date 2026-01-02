@@ -4,6 +4,8 @@
 # Compilation output
 /dist
 
+/.DS_Store
+
 # pnpm deploy output
 /bundle
 
