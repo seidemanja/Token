@@ -386,6 +386,9 @@ def main() -> None:
         "fair_value_mu": cfg.fair_value_mu,
         "fair_value_beta": cfg.fair_value_beta,
         "fair_value_sigma": cfg.fair_value_sigma,
+        "fair_value_floor": cfg.fair_value_floor,
+        "ticks_per_day": cfg.ticks_per_day,
+        "trades_per_tick_lambda": cfg.trades_per_tick_lambda,
         "perceived_bias_sigma": cfg.perceived_bias_sigma,
         "perceived_idio_rho": cfg.perceived_idio_rho,
         "perceived_idio_sigma": cfg.perceived_idio_sigma,
@@ -403,6 +406,8 @@ def main() -> None:
         "entry_k_launch": cfg.entry_k_launch,
         "entry_k_sentiment": cfg.entry_k_sentiment,
         "entry_k_return": cfg.entry_k_return,
+        "entry_return_mult_min": cfg.entry_return_mult_min,
+        "entry_return_mult_max": cfg.entry_return_mult_max,
         "churn_pi0": cfg.churn_pi0,
         "churn_c_sentiment": cfg.churn_c_sentiment,
         "churn_c_return": cfg.churn_c_return,
@@ -433,14 +438,12 @@ def main() -> None:
     initial_price = initial_price_weth_per_token or 1.0
     prev_price_log = _log_safe(1.0)
 
-    db.insert_fair_value(run_id, 0, math.exp(fair_value_log))
-
     with jsonl_path.open("a") as f:
         for day in range(num_days):
             launch_premium = _launch_premium(day)
             launch_premium_lag = _launch_premium(day - 1) if day > 0 else launch_premium
 
-            # Regime + sentiment + fair value (log) update.
+            # Regime + sentiment update once per day.
             if day > 0:
                 if regime == 1:
                     regime = 1 if random.random() < cfg.regime_p11 else 0
@@ -449,21 +452,165 @@ def main() -> None:
 
                 mu_regime = cfg.sentiment_mu_bull if regime == 1 else cfg.sentiment_mu_bear
                 sentiment = (1.0 - cfg.sentiment_alpha) * sentiment + cfg.sentiment_alpha * mu_regime
-                shock = random.gauss(0.0, cfg.fair_value_sigma)
-                fair_value_log = fair_value_log + cfg.fair_value_mu + (cfg.fair_value_beta * sentiment) + shock
+
+            # Update idiosyncratic perception terms (daily cadence).
+            for a in agents:
+                prev_idio = agent_idio.get(a.agent_id, 0.0)
+                agent_idio[a.agent_id] = (cfg.perceived_idio_rho * prev_idio) + random.gauss(0.0, cfg.perceived_idio_sigma)
+
+            # Daily activity flags.
+            active_agents = []
+            for a in agents:
+                if not agent_active.get(a.agent_id, True):
+                    continue
+                activity_prob = cfg.activity_base * math.exp(
+                    (cfg.activity_sentiment_scale * sentiment) + (cfg.activity_launch_scale * launch_premium_lag)
+                )
+                activity_prob = clamp(activity_prob, 0.0, 1.0)
+                if random.random() < activity_prob:
+                    active_agents.append(a)
+
+            ticks = max(1, int(cfg.ticks_per_day))
+            drift_daily = cfg.fair_value_mu + (cfg.fair_value_beta * sentiment)
+            drift_tick = drift_daily / ticks
+            sigma_tick = cfg.fair_value_sigma / math.sqrt(ticks)
+
+            cap_stats = {"BUY": {"trades": 0, "caps": 0}, "SELL": {"trades": 0, "caps": 0}}
+            day_trades = 0
+
+            for _tick in range(ticks):
+                fair_value_log = fair_value_log + drift_tick + random.gauss(0.0, sigma_tick)
                 fair_value_log = max(fair_value_log, math.log(max(cfg.fair_value_floor, 1e-12)))
-                db.insert_fair_value(run_id, day, math.exp(fair_value_log))
+
+                if not active_agents:
+                    continue
+
+                n_trades = _poisson_sample(cfg.trades_per_tick_lambda)
+                for _ in range(n_trades):
+                    a = random.choice(active_agents)
+
+                    spot_price = _spot_price_weth_per_token()
+                    if spot_price is None or spot_price <= 0:
+                        continue
+                    price_norm = spot_price / initial_price
+                    price_log = _log_safe(price_norm)
+
+                    v_i = fair_value_log + agent_bias.get(a.agent_id, 0.0) + agent_idio.get(a.agent_id, 0.0) + launch_premium_lag
+                    mispricing = v_i - price_log
+                    if mispricing > cfg.mispricing_theta:
+                        action = 1
+                    elif mispricing < -cfg.mispricing_theta:
+                        action = -1
+                    else:
+                        action = 0
+
+                    if action == 0:
+                        continue
+
+                    d_i = max(0.0, abs(mispricing) - cfg.mispricing_theta)
+                    size_mult = agent_size.get(a.agent_id, 1.0)
+                    q_base = cfg.trade_q0 * size_mult * d_i
+                    q_i = min(cfg.trade_qmax * size_mult, q_base)
+                    if q_i <= 0:
+                        continue
+
+                    token_reserve, weth_reserve = _pool_reserves()
+                    max_buy_liq = weth_reserve * cfg.max_trade_pct_buy
+                    max_sell_liq = token_reserve * cfg.max_trade_pct_sell
+
+                    cap_buy = min(cfg.max_buy_weth, max_buy_liq)
+                    cap_sell = min(cfg.max_sell_token, max_sell_liq)
+                    value_matched_sell_cap = cap_buy / spot_price
+                    cap_sell = min(cap_sell, value_matched_sell_cap)
+
+                    if action > 0:
+                        side = "BUY"
+                        amount_in = q_i
+                        cap = cap_buy
+                        balance = _erc20_balance(chain.weth_addr, a.address)
+                    else:
+                        side = "SELL"
+                        amount_in = q_i / spot_price
+                        cap = cap_sell
+                        balance = _erc20_balance(chain.token_addr, a.address)
+
+                    amount_in = min(amount_in, balance)
+                    if amount_in <= 0 or cap <= 0:
+                        continue
+
+                    clamped_amount = min(amount_in, cap)
+                    cap_hit = amount_in > cap
+
+                    slippage = _estimated_slippage(
+                        clamped_amount,
+                        is_buy=(side == "BUY"),
+                        token_reserve=token_reserve,
+                        weth_reserve=weth_reserve,
+                        fee_pct=cfg.amm_fee_pct,
+                    )
+                    if slippage is not None and slippage > cfg.max_slippage:
+                        continue
+
+                    token_in = cfg.weth if side == "BUY" else cfg.token
+                    token_out = cfg.token if side == "BUY" else cfg.weth
+                    amount_in_wei = int(clamped_amount * (10**18))
+
+                    cap_stats[side]["trades"] += 1
+                    if cap_hit:
+                        cap_stats[side]["caps"] += 1
+
+                    try:
+                        tx_hash = chain.execute_swap_exact_in(
+                            a,
+                            a.executor,
+                            token_in_addr=token_in,
+                            amount_in_wei=amount_in_wei,
+                            pool_token0=cfg.pool_token0,
+                            pool_token1=cfg.pool_token1,
+                        )
+                        db.insert_trade(run_id, day, a.agent_id, side, str(amount_in_wei),
+                                        token_in, token_out, tx_hash, "SENT", None, None, None)
+
+                        rcpt = chain.wait_receipt(tx_hash)
+                        if rcpt.status == 1:
+                            db.insert_trade(run_id, day, a.agent_id, side, str(amount_in_wei),
+                                            token_in, token_out, tx_hash, "MINED", None, rcpt.blockNumber, rcpt.gasUsed)
+                        else:
+                            db.insert_trade(run_id, day, a.agent_id, side, str(amount_in_wei),
+                                            token_in, token_out, tx_hash, "REVERT", "receipt.status=0", rcpt.blockNumber, rcpt.gasUsed)
+
+                    except Exception as e:
+                        db.insert_trade(run_id, day, a.agent_id, side, str(amount_in_wei),
+                                        token_in, token_out, None, "REVERT", str(e), None, None)
+
+                    f.write(json.dumps({
+                        "run_id": run_id,
+                        "day": day,
+                        "agent_id": a.agent_id,
+                        "address": a.address,
+                        "executor": a.executor,
+                        "agent_type": a.agent_type,
+                        "side": side,
+                        "amount_in_target": q_i,
+                        "amount_in_clamped": clamped_amount,
+                        "cap_limit": cap,
+                        "cap_hit": cap_hit,
+                        "amount_in_wei": str(amount_in_wei),
+                        "token_in": token_in,
+                        "token_out": token_out,
+                        "ts_utc": utc_now_iso(),
+                    }) + "\n")
+                    f.flush()
+                    day_trades += 1
 
             spot_price = _spot_price_weth_per_token()
             price_norm = (spot_price / initial_price) if spot_price else None
-            price_log = _log_safe(price_norm if price_norm is not None else 1.0)
             db.insert_run_factors(run_id, day, sentiment, math.exp(fair_value_log), launch_premium, price_norm)
             circulating_supply = cfg.circulating_supply_start + (day * cfg.circulating_supply_daily_unlock)
             db.insert_circulating_supply(run_id, day, circulating_supply)
 
-            # Holder entry/churn based on launch premium, sentiment, and returns.
-            r_t = price_log - prev_price_log
-            prev_price_log = price_log
+            r_t = _log_safe(price_norm if price_norm is not None else 1.0) - prev_price_log
+            prev_price_log = _log_safe(price_norm if price_norm is not None else 1.0)
 
             holders: list[tuple[Agent, float]] = []
             for a in agents:
@@ -472,9 +619,11 @@ def main() -> None:
                     holders.append((a, bal))
             h_t = len(holders)
 
+            return_mult = math.exp(cfg.entry_k_return * r_t)
+            return_mult = clamp(return_mult, cfg.entry_return_mult_min, cfg.entry_return_mult_max)
             lambda_in = cfg.entry_lambda0 * math.exp(
-                (cfg.entry_k_launch * launch_premium) + (cfg.entry_k_sentiment * sentiment) + (cfg.entry_k_return * r_t)
-            )
+                (cfg.entry_k_launch * launch_premium) + (cfg.entry_k_sentiment * sentiment)
+            ) * return_mult
             new_agents_today = _poisson_sample(lambda_in)
 
             pi_t = cfg.churn_pi0 * math.exp(
@@ -505,144 +654,18 @@ def main() -> None:
                 if a.agent_id not in agent_active:
                     agent_active[a.agent_id] = True
 
-            # Update idiosyncratic perception terms.
-            for a in agents:
-                prev_idio = agent_idio.get(a.agent_id, 0.0)
-                agent_idio[a.agent_id] = (cfg.perceived_idio_rho * prev_idio) + random.gauss(0.0, cfg.perceived_idio_sigma)
-
             perceived_vals = []
             for a in agents:
                 v_i = fair_value_log + agent_bias.get(a.agent_id, 0.0) + agent_idio.get(a.agent_id, 0.0) + launch_premium_lag
                 perceived_vals.append(v_i)
             avg_perceived_log = sum(perceived_vals) / len(perceived_vals) if perceived_vals else fair_value_log
+
+            db.insert_fair_value(run_id, day, math.exp(fair_value_log))
             db.insert_perceived_fair_value(run_id, day, avg_perceived_log)
-
-            token_reserve, weth_reserve = _pool_reserves()
-            max_buy_liq = weth_reserve * cfg.max_trade_pct_buy
-            max_sell_liq = token_reserve * cfg.max_trade_pct_sell
-            cap_buy_day = min(cfg.max_buy_weth, max_buy_liq)
-            cap_sell_day = min(cfg.max_sell_token, max_sell_liq)
-            if spot_price and spot_price > 0:
-                value_matched_sell_cap = cap_buy_day / spot_price
-                cap_sell_day = min(cap_sell_day, value_matched_sell_cap)
-
-            cap_stats = {"BUY": {"trades": 0, "caps": 0}, "SELL": {"trades": 0, "caps": 0}}
-
-            for a in agents:
-                if not agent_active.get(a.agent_id, True):
-                    continue
-
-                activity_prob = cfg.activity_base * math.exp(
-                    (cfg.activity_sentiment_scale * sentiment) + (cfg.activity_launch_scale * launch_premium_lag)
-                )
-                activity_prob = clamp(activity_prob, 0.0, 1.0)
-                if random.random() > activity_prob:
-                    continue
-
-                v_i = fair_value_log + agent_bias.get(a.agent_id, 0.0) + agent_idio.get(a.agent_id, 0.0) + launch_premium_lag
-                mispricing = v_i - price_log
-                if mispricing > cfg.mispricing_theta:
-                    action = 1
-                elif mispricing < -cfg.mispricing_theta:
-                    action = -1
-                else:
-                    action = 0
-
-                if action == 0:
-                    continue
-
-                d_i = max(0.0, abs(mispricing) - cfg.mispricing_theta)
-                size_mult = agent_size.get(a.agent_id, 1.0)
-                q_base = cfg.trade_q0 * size_mult * d_i
-                q_i = min(cfg.trade_qmax * size_mult, q_base)
-                if q_i <= 0:
-                    continue
-
-                if spot_price is None or spot_price <= 0:
-                    continue
-
-                if action > 0:
-                    side = "BUY"
-                    amount_in = q_i
-                    cap = cap_buy_day
-                    balance = _erc20_balance(chain.weth_addr, a.address)
-                else:
-                    side = "SELL"
-                    amount_in = q_i / spot_price
-                    cap = cap_sell_day
-                    balance = _erc20_balance(chain.token_addr, a.address)
-
-                amount_in = min(amount_in, balance)
-                if amount_in <= 0 or cap <= 0:
-                    continue
-
-                clamped_amount = min(amount_in, cap)
-                cap_hit = amount_in > cap
-
-                slippage = _estimated_slippage(
-                    clamped_amount,
-                    is_buy=(side == "BUY"),
-                    token_reserve=token_reserve,
-                    weth_reserve=weth_reserve,
-                    fee_pct=cfg.amm_fee_pct,
-                )
-                if slippage is not None and slippage > cfg.max_slippage:
-                    continue
-
-                token_in = cfg.weth if side == "BUY" else cfg.token
-                token_out = cfg.token if side == "BUY" else cfg.weth
-                amount_in_wei = int(clamped_amount * (10**18))
-
-                cap_stats[side]["trades"] += 1
-                if cap_hit:
-                    cap_stats[side]["caps"] += 1
-
-                try:
-                    tx_hash = chain.execute_swap_exact_in(
-                        a,
-                        a.executor,
-                        token_in_addr=token_in,
-                        amount_in_wei=amount_in_wei,
-                        pool_token0=cfg.pool_token0,
-                        pool_token1=cfg.pool_token1,
-                    )
-                    db.insert_trade(run_id, day, a.agent_id, side, str(amount_in_wei),
-                                    token_in, token_out, tx_hash, "SENT", None, None, None)
-
-                    rcpt = chain.wait_receipt(tx_hash)
-                    if rcpt.status == 1:
-                        db.insert_trade(run_id, day, a.agent_id, side, str(amount_in_wei),
-                                        token_in, token_out, tx_hash, "MINED", None, rcpt.blockNumber, rcpt.gasUsed)
-                    else:
-                        db.insert_trade(run_id, day, a.agent_id, side, str(amount_in_wei),
-                                        token_in, token_out, tx_hash, "REVERT", "receipt.status=0", rcpt.blockNumber, rcpt.gasUsed)
-
-                except Exception as e:
-                    db.insert_trade(run_id, day, a.agent_id, side, str(amount_in_wei),
-                                    token_in, token_out, None, "REVERT", str(e), None, None)
-
-                f.write(json.dumps({
-                    "run_id": run_id,
-                    "day": day,
-                    "agent_id": a.agent_id,
-                    "address": a.address,
-                    "executor": a.executor,
-                    "agent_type": a.agent_type,
-                    "side": side,
-                    "amount_in_target": q_i,
-                    "amount_in_clamped": clamped_amount,
-                    "cap_limit": cap,
-                    "cap_hit": cap_hit,
-                    "amount_in_wei": str(amount_in_wei),
-                    "token_in": token_in,
-                    "token_out": token_out,
-                    "ts_utc": utc_now_iso(),
-                }) + "\n")
-                f.flush()
-
             db.insert_trade_cap_daily(run_id, day, "BUY", cap_stats["BUY"]["trades"], cap_stats["BUY"]["caps"])
             db.insert_trade_cap_daily(run_id, day, "SELL", cap_stats["SELL"]["trades"], cap_stats["SELL"]["caps"])
-            print(f"Completed day {day + 1}/{num_days} (agents={len(agents)})")
+
+            print(f"Completed day {day + 1}/{num_days} (agents={len(agents)} trades={day_trades})")
 
     # Record run_end_block AFTER all sim activity.
     run_end_block = chain.w3.eth.block_number

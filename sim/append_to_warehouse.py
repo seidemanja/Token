@@ -226,6 +226,17 @@ def _ensure_warehouse_schema(conn: sqlite3.Connection) -> None:
           swap_count INTEGER NOT NULL,
           avg_price_weth_per_token REAL NOT NULL,
           avg_normalized_price REAL NOT NULL,
+          open_price_weth_per_token REAL NOT NULL,
+          high_price_weth_per_token REAL NOT NULL,
+          low_price_weth_per_token REAL NOT NULL,
+          close_price_weth_per_token REAL NOT NULL,
+          open_normalized_price REAL NOT NULL,
+          high_normalized_price REAL NOT NULL,
+          low_normalized_price REAL NOT NULL,
+          close_normalized_price REAL NOT NULL,
+          volume_weth_in REAL,
+          trades_count INTEGER,
+          fair_value_close REAL,
           PRIMARY KEY (run_id, day)
         );
 
@@ -318,7 +329,12 @@ def _load_daily_rows(conn: sqlite3.Connection, table: str) -> list[tuple]:
     if not _table_exists(conn, table):
         return []
     cols = {
-        "daily_prices": "day, swap_count, avg_price_weth_per_token, avg_normalized_price",
+        "daily_prices": (
+            "day, swap_count, avg_price_weth_per_token, avg_normalized_price, "
+            "open_price_weth_per_token, high_price_weth_per_token, low_price_weth_per_token, close_price_weth_per_token, "
+            "open_normalized_price, high_normalized_price, low_normalized_price, close_normalized_price, "
+            "volume_weth_in, trades_count, fair_value_close"
+        ),
         "daily_market": "day, swap_count, volume_token_in, volume_weth_in, avg_tick",
     }.get(table)
     if cols is None:
@@ -576,10 +592,63 @@ def append_to_warehouse(run_db: Path, warehouse_db: Path) -> None:
         if daily_prices:
             warehouse_conn.executemany(
                 """
-                INSERT OR REPLACE INTO run_daily_prices(run_id, day, swap_count, avg_price_weth_per_token, avg_normalized_price)
-                VALUES (?,?,?,?,?)
+                INSERT OR REPLACE INTO run_daily_prices(
+                  run_id,
+                  day,
+                  swap_count,
+                  avg_price_weth_per_token,
+                  avg_normalized_price,
+                  open_price_weth_per_token,
+                  high_price_weth_per_token,
+                  low_price_weth_per_token,
+                  close_price_weth_per_token,
+                  open_normalized_price,
+                  high_normalized_price,
+                  low_normalized_price,
+                  close_normalized_price,
+                  volume_weth_in,
+                  trades_count,
+                  fair_value_close
+                )
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                [(meta["run_id"], int(day), int(cnt), float(p), float(n)) for day, cnt, p, n in daily_prices],
+                [
+                    (
+                        meta["run_id"],
+                        int(day),
+                        int(cnt),
+                        float(p),
+                        float(n),
+                        float(op),
+                        float(hp),
+                        float(lp),
+                        float(cp),
+                        float(on),
+                        float(hn),
+                        float(ln),
+                        float(cn),
+                        (float(vw) if vw is not None else None),
+                        (int(tc) if tc is not None else None),
+                        (float(fv) if fv is not None else None),
+                    )
+                    for (
+                        day,
+                        cnt,
+                        p,
+                        n,
+                        op,
+                        hp,
+                        lp,
+                        cp,
+                        on,
+                        hn,
+                        ln,
+                        cn,
+                        vw,
+                        tc,
+                        fv,
+                    ) in daily_prices
+                ],
             )
 
         if daily_market:

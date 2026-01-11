@@ -53,7 +53,18 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
           day INTEGER PRIMARY KEY,
           swap_count INTEGER NOT NULL,
           avg_price_weth_per_token REAL NOT NULL,
-          avg_normalized_price REAL NOT NULL
+          avg_normalized_price REAL NOT NULL,
+          open_price_weth_per_token REAL NOT NULL,
+          high_price_weth_per_token REAL NOT NULL,
+          low_price_weth_per_token REAL NOT NULL,
+          close_price_weth_per_token REAL NOT NULL,
+          open_normalized_price REAL NOT NULL,
+          high_normalized_price REAL NOT NULL,
+          low_normalized_price REAL NOT NULL,
+          close_normalized_price REAL NOT NULL,
+          volume_weth_in REAL,
+          trades_count INTEGER,
+          fair_value_close REAL
         );
 
         CREATE TABLE IF NOT EXISTS run_stats (
@@ -224,20 +235,89 @@ def main() -> None:
         p, n = float(r[0]), float(r[1])
 
         if day not in daily:
-            daily[day] = {"count": 0.0, "p_sum": 0.0, "n_sum": 0.0}
+            daily[day] = {
+                "count": 0.0,
+                "p_sum": 0.0,
+                "n_sum": 0.0,
+                "open_p": p,
+                "close_p": p,
+                "high_p": p,
+                "low_p": p,
+                "open_n": n,
+                "close_n": n,
+                "high_n": n,
+                "low_n": n,
+            }
 
         daily[day]["count"] += 1.0
         daily[day]["p_sum"] += p
         daily[day]["n_sum"] += n
+        daily[day]["close_p"] = p
+        daily[day]["close_n"] = n
+        daily[day]["high_p"] = max(daily[day]["high_p"], p)
+        daily[day]["low_p"] = min(daily[day]["low_p"], p)
+        daily[day]["high_n"] = max(daily[day]["high_n"], n)
+        daily[day]["low_n"] = min(daily[day]["low_n"], n)
+
+    volumes = {}
+    if conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_market'").fetchone():
+        volumes = {
+            int(row[0]): (float(row[1]), int(row[2]))
+            for row in conn.execute(
+                "SELECT day, volume_weth_in, swap_count FROM daily_market ORDER BY day ASC"
+            ).fetchall()
+        }
+    fair_values = {}
+    if conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='fair_value_daily'").fetchone():
+        fair_values = {
+            int(row[0]): float(row[1])
+            for row in conn.execute(
+                "SELECT day, fair_value FROM fair_value_daily ORDER BY day ASC"
+            ).fetchall()
+        }
 
     for day, d in daily.items():
         cnt = int(d["count"])
+        volume_weth_in, trades_count = volumes.get(int(day), (None, None))
+        fair_value_close = fair_values.get(int(day))
         conn.execute(
             """
-            INSERT OR REPLACE INTO daily_prices(day, swap_count, avg_price_weth_per_token, avg_normalized_price)
-            VALUES (?,?,?,?)
+            INSERT OR REPLACE INTO daily_prices(
+              day,
+              swap_count,
+              avg_price_weth_per_token,
+              avg_normalized_price,
+              open_price_weth_per_token,
+              high_price_weth_per_token,
+              low_price_weth_per_token,
+              close_price_weth_per_token,
+              open_normalized_price,
+              high_normalized_price,
+              low_normalized_price,
+              close_normalized_price,
+              volume_weth_in,
+              trades_count,
+              fair_value_close
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
-            (int(day), cnt, float(d["p_sum"] / cnt), float(d["n_sum"] / cnt)),
+            (
+                int(day),
+                cnt,
+                float(d["p_sum"] / cnt),
+                float(d["n_sum"] / cnt),
+                float(d["open_p"]),
+                float(d["high_p"]),
+                float(d["low_p"]),
+                float(d["close_p"]),
+                float(d["open_n"]),
+                float(d["high_n"]),
+                float(d["low_n"]),
+                float(d["close_n"]),
+                (float(volume_weth_in) if volume_weth_in is not None else None),
+                (int(trades_count) if trades_count is not None else None),
+                (float(fair_value_close) if fair_value_close is not None else None),
+            ),
         )
 
     conn.commit()

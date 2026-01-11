@@ -46,6 +46,10 @@ Fair-value + sentiment diagnostics:
 - `SIM_FAIR_VALUE_BETA` (default 0.10)
 - `SIM_FAIR_VALUE_SIGMA` (default 0.01)
 - `SIM_FAIR_VALUE_FLOOR` (default 0.01)
+
+Intraday ticks:
+- `SIM_TICKS_PER_DAY` (default 24)
+- `SIM_TRADES_PER_TICK_LAMBDA` (Poisson mean trades per tick)
 - `SIM_SENTIMENT_ALPHA` (default 0.10)
 - `SIM_SENTIMENT_MU_BEAR` / `SIM_SENTIMENT_MU_BULL`
 - `SIM_REGIME_P00` / `SIM_REGIME_P11`
@@ -198,7 +202,7 @@ Dependency: `matplotlib` (install via `pip install matplotlib`).
 ### Automatic warehouse update
 `sim/post_run.py` now appends the run to `sim/warehouse.db` automatically after all analytics steps complete. You can still run `sim.append_to_warehouse` manually if needed.
 Wallet growth:
-- New wallet entry uses `SIM_ENTRY_LAMBDA0` with launch/sentiment/return sensitivity (`SIM_ENTRY_K_L`, `SIM_ENTRY_K_S`, `SIM_ENTRY_K_R`).
+- New wallet entry uses `SIM_ENTRY_LAMBDA0` with launch/sentiment/return sensitivity (`SIM_ENTRY_K_L`, `SIM_ENTRY_K_S`, `SIM_ENTRY_K_R`) and a capped return multiplier (`SIM_ENTRY_RETURN_MULT_MIN`, `SIM_ENTRY_RETURN_MULT_MAX`).
 - Churn uses `SIM_CHURN_PI0` with sentiment/return sensitivity (`SIM_CHURN_C_S`, `SIM_CHURN_C_R`).
 Carry forward wallets:
 - `SIM_CONTINUE_FROM_LATEST=true|false` (default false)

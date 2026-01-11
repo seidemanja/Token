@@ -1,0 +1,13 @@
+run_id: 20260102T143154Z
+  created_at_utc : 2026-01-02T14:31:54.577992+00:00
+  network        : local
+  pool           : 0xe052851d73e480545E7A5E4C63840FF7aF4Ec34f
+  token          : 0x7f959Faf3b57281e937D75BEe310b364Dcadaf75
+  weth           : 0xfff9976782d46cc05630d1f6ebab18b2324d6b14
+  block_window   : 9927921 -> 9933372
+  trades         : total=4482 mined=2239 reverted=4
+  sides          : buys=1856 sells=2626
+  onchain_events : swaps=2239 mints=33
+  anchor_price   : 61.515954202508574 (anchor_day=0)
+  volumes        : token_in=1.1496961119123792 weth_in=85.16040893739468
+  coverage_days  : price_days=30 market_days=30
