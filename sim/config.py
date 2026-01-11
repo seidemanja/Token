@@ -117,6 +117,9 @@ class SimConfig:
     fair_value_sigma: float
     fair_value_floor: float
 
+    ticks_per_day: int
+    trades_per_tick_lambda: float
+
     # Perceived value + launch premium
     perceived_bias_sigma: float
     perceived_idio_rho: float
@@ -141,6 +144,8 @@ class SimConfig:
     entry_k_launch: float
     entry_k_sentiment: float
     entry_k_return: float
+    entry_return_mult_min: float
+    entry_return_mult_max: float
     churn_pi0: float
     churn_c_sentiment: float
     churn_c_return: float
@@ -240,6 +245,9 @@ def load_config() -> SimConfig:
         fair_value_sigma=_env_float("SIM_FAIR_VALUE_SIGMA", 0.01),
         fair_value_floor=_env_float("SIM_FAIR_VALUE_FLOOR", 0.01),
 
+        ticks_per_day=_env_int("SIM_TICKS_PER_DAY", 24),
+        trades_per_tick_lambda=_env_float("SIM_TRADES_PER_TICK_LAMBDA", 0.5),
+
         # Perceived value + launch premium
         perceived_bias_sigma=_env_float("SIM_PERCEIVED_BIAS_SIGMA", 0.05),
         perceived_idio_rho=_env_float("SIM_PERCEIVED_IDIO_RHO", 0.95),
@@ -264,6 +272,8 @@ def load_config() -> SimConfig:
         entry_k_launch=_env_float("SIM_ENTRY_K_L", 0.5),
         entry_k_sentiment=_env_float("SIM_ENTRY_K_S", 0.5),
         entry_k_return=_env_float("SIM_ENTRY_K_R", 0.5),
+        entry_return_mult_min=_env_float("SIM_ENTRY_RETURN_MULT_MIN", 0.3),
+        entry_return_mult_max=_env_float("SIM_ENTRY_RETURN_MULT_MAX", 3.0),
         churn_pi0=_env_float("SIM_CHURN_PI0", 0.01),
         churn_c_sentiment=_env_float("SIM_CHURN_C_S", 0.5),
         churn_c_return=_env_float("SIM_CHURN_C_R", 0.5),

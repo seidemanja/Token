@@ -50,6 +50,11 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return bool(row)
 
 
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
+    return any(str(r[1]) == column for r in rows)
+
+
 def _load_runs(conn: sqlite3.Connection) -> Dict[str, RunMeta]:
     rows = conn.execute(
         """
@@ -114,6 +119,31 @@ def _load_run_summary(conn: sqlite3.Connection, run_id: str) -> Optional[dict]:
 def _load_daily_prices(conn: sqlite3.Connection, run_id: str) -> List[dict]:
     if not _table_exists(conn, "run_daily_prices"):
         return []
+    has_close = _table_has_column(conn, "run_daily_prices", "close_normalized_price")
+    if has_close:
+        rows = conn.execute(
+            """
+            SELECT day, swap_count, avg_price_weth_per_token, avg_normalized_price,
+                   open_normalized_price, high_normalized_price, low_normalized_price, close_normalized_price
+            FROM run_daily_prices
+            WHERE run_id=?
+            ORDER BY day ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        return [
+            {
+                "day": int(day),
+                "swap_count": int(cnt),
+                "avg_price_weth_per_token": float(p),
+                "avg_normalized_price": float(n),
+                "open_normalized_price": float(op),
+                "high_normalized_price": float(hp),
+                "low_normalized_price": float(lp),
+                "close_normalized_price": float(cp),
+            }
+            for day, cnt, p, n, op, hp, lp, cp in rows
+        ]
     rows = conn.execute(
         """
         SELECT day, swap_count, avg_price_weth_per_token, avg_normalized_price
@@ -132,6 +162,63 @@ def _load_daily_prices(conn: sqlite3.Connection, run_id: str) -> List[dict]:
         }
         for day, cnt, p, n in rows
     ]
+
+
+def _load_run_stats(conn: sqlite3.Connection, run_id: str) -> Dict[str, str]:
+    if not _table_exists(conn, "run_stats"):
+        return {}
+    rows = conn.execute(
+        """
+        SELECT key, value
+        FROM run_stats
+        WHERE run_id=?
+        """,
+        (run_id,),
+    ).fetchall()
+    return {str(k): str(v) for k, v in rows}
+
+
+def _load_daily_close_prices(conn: sqlite3.Connection, run_id: str) -> List[dict]:
+    """
+    Compute daily close prices from swap prices + run_stats day0_block/blocks_per_day.
+    Falls back to daily average prices if needed.
+    """
+    if _table_has_column(conn, "run_daily_prices", "close_normalized_price"):
+        rows = conn.execute(
+            """
+            SELECT day, close_normalized_price
+            FROM run_daily_prices
+            WHERE run_id=?
+            ORDER BY day ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        return [{"day": int(day), "avg_normalized_price": float(price)} for day, price in rows]
+    if not _table_exists(conn, "run_swap_prices"):
+        return _load_daily_prices(conn, run_id)
+    stats = _load_run_stats(conn, run_id)
+    day0_block = int(stats.get("day0_block", "0") or 0)
+    blocks_per_day = int(stats.get("blocks_per_day", "100") or 100)
+    if day0_block <= 0 or blocks_per_day <= 0:
+        return _load_daily_prices(conn, run_id)
+
+    rows = conn.execute(
+        """
+        SELECT block_number, normalized_price
+        FROM run_swap_prices
+        WHERE run_id=?
+        ORDER BY block_number ASC
+        """,
+        (run_id,),
+    ).fetchall()
+    if not rows:
+        return _load_daily_prices(conn, run_id)
+
+    closes: Dict[int, float] = {}
+    for block_number, price in rows:
+        day = int((int(block_number) - day0_block) // blocks_per_day)
+        closes[day] = float(price)
+    return [{"day": day, "avg_normalized_price": price} for day, price in sorted(closes.items())]
 
 
 def _load_daily_market(conn: sqlite3.Connection, run_id: str) -> List[dict]:
@@ -159,15 +246,26 @@ def _load_daily_market(conn: sqlite3.Connection, run_id: str) -> List[dict]:
 
 
 def _load_daily_returns(conn: sqlite3.Connection, run_id: str) -> List[dict]:
-    rows = conn.execute(
-        """
-        SELECT day, avg_normalized_price
-        FROM run_daily_prices
-        WHERE run_id=?
-        ORDER BY day ASC
-        """,
-        (run_id,),
-    ).fetchall()
+    if _table_has_column(conn, "run_daily_prices", "close_normalized_price"):
+        rows = conn.execute(
+            """
+            SELECT day, close_normalized_price
+            FROM run_daily_prices
+            WHERE run_id=?
+            ORDER BY day ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT day, avg_normalized_price
+            FROM run_daily_prices
+            WHERE run_id=?
+            ORDER BY day ASC
+            """,
+            (run_id,),
+        ).fetchall()
     if len(rows) < 2:
         return []
     # Drop the last day to avoid partial-day artifacts at run boundaries.
@@ -883,6 +981,7 @@ def generate_report(warehouse: Path, outdir: Path, run_filter: Optional[List[str
                 summaries[run_id] = summary
 
         daily_prices = {rid: _load_daily_prices(conn, rid) for rid in run_ids}
+        daily_close_prices = {rid: _load_daily_close_prices(conn, rid) for rid in run_ids}
         daily_market = {rid: _load_daily_market(conn, rid) for rid in run_ids}
         daily_returns = {rid: _load_daily_returns(conn, rid) for rid in run_ids}
         trade_sizes = _load_trade_sizes(conn)
@@ -909,15 +1008,15 @@ def generate_report(warehouse: Path, outdir: Path, run_filter: Optional[List[str
     else:
         print("  skipped volume plot (no data)")
 
-    price_fair_plot = _plot_price_vs_fair_value(outdir, daily_prices, fair_values)
+    price_fair_plot = _plot_price_vs_fair_value(outdir, daily_close_prices, fair_values)
     if price_fair_plot:
         print(f"  wrote {price_fair_plot}")
 
-    spread_plot = _plot_price_fair_spread(outdir, daily_prices, fair_values)
+    spread_plot = _plot_price_fair_spread(outdir, daily_close_prices, fair_values)
     if spread_plot:
         print(f"  wrote {spread_plot}")
 
-    perceived_plot = _plot_price_fair_perceived(outdir, daily_prices, fair_values, perceived_values)
+    perceived_plot = _plot_price_fair_perceived(outdir, daily_close_prices, fair_values, perceived_values)
     if perceived_plot:
         print(f"  wrote {perceived_plot}")
 
