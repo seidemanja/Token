@@ -1,0 +1,77 @@
+run_id: 20260322T211423Z
+  created_at_utc : 2026-03-22T21:14:23.526759+00:00
+  network        : local
+  pool           : 0x87F53B06bBF94b178dB91E79D94AA786294925ca
+  token          : 0x5FC8d32690cc91D4c39d9d3abcBD16989F875707
+  weth           : 0x5FbDB2315678afecb367f032d93F642f64180aa3
+  block_window   : 106655 -> 124350
+  trades         : total=15980 mined=15980 reverted=0
+  sides          : buys=10212 sells=5768
+  onchain_events : swaps=15981 mints=0
+  anchor_price   : 0.08369684585603404 (anchor_day=0)
+  volumes        : token_in=370.23728567067496 weth_in_buy_side=79.11991663854246 weth_total_gross=114.27386522272455
+  coverage_days  : price_days=45 market_days=45
+  params:
+    num_days = 45
+    num_agents = 30
+    max_agents = 1200
+    agent_start_eth = 10.0
+    agent_start_weth = 3.0
+    agent_start_token = 0.2
+    max_buy_weth = 0.6
+    max_sell_token = 500000.0
+    ticks_per_day = 24
+    regime_bull_persist = 0.82
+    regime_bear_persist = 0.78
+    hype_initial_min_days = 12
+    hype_initial_max_days = 18
+    hype_initial_days_sampled = 17
+    hype_persist_start = 0.92
+    hype_persist_floor = 0.05
+    hype_decay_tau = 8.0
+    hype_exit_to_bull_prob = 0.0
+    hype_reentry_prob = 0.01
+    sentiment_alpha = 0.35
+    sentiment_regime_level = 0.5
+    sentiment_hype_mult = 2.4
+    fair_mu = 0.0008
+    fair_beta = 0.015
+    fair_sigma = 0.013
+    fair_reversion = 0.07
+    flow_intensity = 2.6
+    flow_mispricing_scale = 0.04
+    flow_regime_tilt = 0.2
+    flow_noise_sigma = 0.6
+    impact_kappa = 1.15
+    entry_lambda_base = 2.2
+    churn_prob_base = 0.0028
+    fixed_entry_sentiment_sensitivity = 1.05
+    fixed_entry_saturation_power = 1.55
+    fixed_churn_sentiment_sensitivity = 1.0
+    fixed_churn_crowding_sensitivity = 1.65
+    fixed_trade_base_participation = 0.08
+    fixed_trade_signal_participation = 0.12
+    fixed_trade_sentiment_participation = 0.06
+    fixed_trade_regime_activity_bull = 0.03
+    fixed_trade_regime_activity_hype = 0.12
+    fixed_trade_regime_activity_bear = -0.04
+    fixed_entry_regime_mult_hype = 1.75
+    fixed_entry_regime_mult_bull = 1.15
+    fixed_entry_regime_mult_bear = 0.7
+    cohort_enabled = True
+    cohort_eligible_percent = 50
+    nft_threshold_tokens = 0.75
+    nft_threshold_basis = held_token_balance
+    fixed_eligible_buy_weight_pre_threshold = 4.0
+    fixed_eligible_buy_weight_post_threshold = 1.0
+    fixed_eligible_sell_weight_pre_threshold = 1.0
+    fixed_eligible_sell_weight_post_threshold = 1.0
+    fixed_eligible_churn_mult_pre_threshold = 1.0
+    fixed_eligible_churn_mult_post_threshold = 1.0
+    circulating_supply_start = 0.0
+    circulating_supply_daily_unlock = 0.0
+    max_trade_pct_buy = 0.04
+    max_trade_pct_sell = 0.04
+    max_slippage = 0.05
+    amm_fee_pct = 0.003
+    fast_mode = False

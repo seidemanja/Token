@@ -19,14 +19,22 @@ async function main() {
 
   const [trader] = await ethers.getSigners();
 
-  const factory = await ethers.getContractAt(
-    "IUniswapV3FactoryMinimal",
-    UNISWAP_SEPOLIA.factory
-  );
+  const isLocal = network === "local";
+  const factoryAddr = isLocal ? process.env.LOCAL_UNISWAP_V3_FACTORY : UNISWAP_SEPOLIA.factory;
+  const wethAddr = isLocal ? process.env.LOCAL_WETH_ADDRESS : UNISWAP_SEPOLIA.weth;
+
+  if (!factoryAddr) {
+    throw new Error("Missing LOCAL_UNISWAP_V3_FACTORY in .env");
+  }
+  if (!wethAddr) {
+    throw new Error("Missing LOCAL_WETH_ADDRESS in .env");
+  }
+
+  const factory = await ethers.getContractAt("IUniswapV3FactoryMinimal", factoryAddr);
 
   const poolAddr = await factory.getPool(
     tokenAddress,
-    UNISWAP_SEPOLIA.weth,
+    wethAddr,
     FEE
   );
 
@@ -42,7 +50,7 @@ async function main() {
   );
 
   const token0 = (await pool.token0()).toLowerCase();
-  const WETH = UNISWAP_SEPOLIA.weth.toLowerCase();
+  const WETH = wethAddr.toLowerCase();
 
   // We want WETH -> TOKEN
   // If token0 == WETH then zeroForOne = true (token0 -> token1)
@@ -52,7 +60,7 @@ async function main() {
   // Wrap ETH -> WETH
   const weth = await ethers.getContractAt(
     "IWETH9Minimal",
-    UNISWAP_SEPOLIA.weth
+    wethAddr
   );
 
   const wethIn = ethers.parseEther("0.0001"); // small test amount
@@ -66,7 +74,7 @@ async function main() {
   // Approve executor to pull WETH during callback
   const wethErc20 = await ethers.getContractAt(
     "@openzeppelin/contracts/token/ERC20/IERC20.sol:IERC20",
-    UNISWAP_SEPOLIA.weth
+    wethAddr
   );
 
   await (await wethErc20.approve(await exec.getAddress(), wethIn)).wait();

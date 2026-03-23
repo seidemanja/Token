@@ -16,19 +16,60 @@ Key change:
 from __future__ import annotations
 
 import sqlite3
+import os
 from typing import Optional
 
 
 class SimDB:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, fast_mode: bool = False, batch_size: Optional[int] = None) -> None:
         self.path = path
+        self.fast_mode = bool(fast_mode)
+        if batch_size is None:
+            # Use a larger default batch size in fast mode for fewer commits.
+            default_batch = "5000" if self.fast_mode else "1000"
+            batch_size = int(os.getenv("SIM_DB_BATCH_SIZE", default_batch))
+        self.batch_size = max(1, int(batch_size))
+        self._trade_buffer: list[tuple] = []
+        self._agent_buffer: list[tuple] = []
         self.conn = sqlite3.connect(path)
         self.conn.execute("PRAGMA journal_mode=WAL;")
+        if self.fast_mode:
+            # Speed-only pragmas for fast mode. Do not affect data shape.
+            self.conn.execute("PRAGMA synchronous=OFF;")
+            self.conn.execute("PRAGMA temp_store=MEMORY;")
+            self.conn.execute("PRAGMA cache_size=-20000;")  # ~20MB cache
         self._ensure_schema()
 
     def close(self) -> None:
-        self.conn.commit()
+        self.flush()
         self.conn.close()
+
+    def flush(self) -> None:
+        """
+        Flush buffered inserts when fast_mode is enabled.
+        """
+        if not self.fast_mode:
+            return
+        if self._agent_buffer:
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO agents(run_id, agent_id, address, private_key, executor, agent_type)
+                VALUES (?,?,?,?,?,?)
+                """,
+                self._agent_buffer,
+            )
+            self._agent_buffer.clear()
+        if self._trade_buffer:
+            self.conn.executemany(
+                """
+                INSERT INTO trades
+                  (run_id, day, agent_id, side, amount_in_wei, token_in, token_out, tx_hash, status, revert_reason, block_number, gas_used)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                self._trade_buffer,
+            )
+            self._trade_buffer.clear()
+        self.conn.commit()
 
     def _ensure_schema(self) -> None:
         """
@@ -104,6 +145,7 @@ class SimDB:
               sentiment REAL NOT NULL,
               fair_value REAL NOT NULL,
               launch_mult REAL NOT NULL,
+              regime_code INTEGER,
               price_norm REAL,
               PRIMARY KEY (run_id, day)
             );
@@ -127,6 +169,11 @@ class SimDB:
               minted_total INTEGER NOT NULL,
               PRIMARY KEY (run_id, day)
             );
+
+            CREATE TABLE IF NOT EXISTS run_stats (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
             """
         )
 
@@ -139,6 +186,9 @@ class SimDB:
         cols_agents = [r[1] for r in self.conn.execute("PRAGMA table_info(agents);").fetchall()]
         if "agent_type" not in cols_agents:
             self.conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT DEFAULT 'retail';")
+        cols_run_factors = [r[1] for r in self.conn.execute("PRAGMA table_info(run_factors_daily);").fetchall()]
+        if "regime_code" not in cols_run_factors:
+            self.conn.execute("ALTER TABLE run_factors_daily ADD COLUMN regime_code INTEGER;")
 
         self.conn.commit()
 
@@ -208,12 +258,18 @@ class SimDB:
         executor: Optional[str],
         agent_type: str,
     ) -> None:
+        row = (run_id, int(agent_id), address.lower(), private_key, (executor or ""), agent_type)
+        if self.fast_mode:
+            self._agent_buffer.append(row)
+            if len(self._agent_buffer) >= self.batch_size:
+                self.flush()
+            return
         self.conn.execute(
             """
             INSERT OR REPLACE INTO agents(run_id, agent_id, address, private_key, executor, agent_type)
             VALUES (?,?,?,?,?,?)
             """,
-            (run_id, int(agent_id), address.lower(), private_key, (executor or ""), agent_type),
+            row,
         )
         self.conn.commit()
 
@@ -232,26 +288,32 @@ class SimDB:
         block_number: Optional[int],
         gas_used: Optional[int],
     ) -> None:
+        row = (
+            run_id,
+            int(day),
+            int(agent_id),
+            side,
+            str(amount_in_wei),
+            token_in.lower(),
+            token_out.lower(),
+            tx_hash,
+            status,
+            revert_reason,
+            (int(block_number) if block_number is not None else None),
+            (int(gas_used) if gas_used is not None else None),
+        )
+        if self.fast_mode:
+            self._trade_buffer.append(row)
+            if len(self._trade_buffer) >= self.batch_size:
+                self.flush()
+            return
         self.conn.execute(
             """
             INSERT INTO trades
               (run_id, day, agent_id, side, amount_in_wei, token_in, token_out, tx_hash, status, revert_reason, block_number, gas_used)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             """,
-            (
-                run_id,
-                int(day),
-                int(agent_id),
-                side,
-                str(amount_in_wei),
-                token_in.lower(),
-                token_out.lower(),
-                tx_hash,
-                status,
-                revert_reason,
-                (int(block_number) if block_number is not None else None),
-                (int(gas_used) if gas_used is not None else None),
-            ),
+            row,
         )
         self.conn.commit()
 
@@ -293,11 +355,12 @@ class SimDB:
         fair_value: float,
         launch_mult: float,
         price_norm: Optional[float],
+        regime_code: Optional[int] = None,
     ) -> None:
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO run_factors_daily(run_id, day, sentiment, fair_value, launch_mult, price_norm)
-            VALUES (?,?,?,?,?,?)
+            INSERT OR REPLACE INTO run_factors_daily(run_id, day, sentiment, fair_value, launch_mult, regime_code, price_norm)
+            VALUES (?,?,?,?,?,?,?)
             """,
             (
                 run_id,
@@ -305,6 +368,7 @@ class SimDB:
                 float(sentiment),
                 float(fair_value),
                 float(launch_mult),
+                (int(regime_code) if regime_code is not None else None),
                 (float(price_norm) if price_norm is not None else None),
             ),
         )
@@ -317,5 +381,12 @@ class SimDB:
             VALUES (?,?,?,?,?)
             """,
             (run_id, int(day), side, int(trade_count), int(cap_hits)),
+        )
+        self.conn.commit()
+
+    def set_run_stat(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO run_stats(key, value) VALUES (?,?)",
+            (str(key), str(value)),
         )
         self.conn.commit()

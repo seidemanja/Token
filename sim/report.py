@@ -16,8 +16,12 @@ Dependencies: matplotlib (install via `pip install matplotlib` if missing).
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import random
 import sqlite3
+import statistics
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +38,43 @@ class RunMeta:
     weth: str
     run_start_block: Optional[int]
     run_end_block: Optional[int]
+
+
+@dataclass
+class CohortRunData:
+    run_id: str
+    max_day: int
+    threshold_tokens: float
+    wallets_by_cohort: Dict[str, List[str]]
+    wallets_by_group: Dict[str, List[str]]
+    balances_by_wallet: Dict[str, List[float]]
+    buy_counts_by_day: Dict[int, Dict[str, int]]
+    buy_tokens_by_day: Dict[int, Dict[str, float]]
+    sell_tokens_by_day: Dict[int, Dict[str, float]]
+    total_buy_counts: Dict[str, int]
+    total_buy_tokens: Dict[str, float]
+    threshold_cross_day: Dict[str, Optional[int]]
+
+
+COHORT_GROUPS: List[Tuple[str, str, str]] = [
+    ("eligible_hit_threshold", "eligible & hit threshold", "#2ca02c"),
+    ("eligible_not_hit_threshold", "eligible & not hit threshold", "#1f77b4"),
+    ("control", "control", "#ff7f0e"),
+]
+
+
+def _cohort_group_label(group_key: str) -> str:
+    for key, label, _ in COHORT_GROUPS:
+        if key == group_key:
+            return label
+    return group_key
+
+
+def _cohort_group_color(group_key: str) -> str:
+    for key, _, color in COHORT_GROUPS:
+        if key == group_key:
+            return color
+    return "#444444"
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -53,6 +94,16 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
     return any(str(r[1]) == column for r in rows)
+
+
+def _load_manifest_for_run(run_id: str) -> Optional[dict]:
+    base = Path(__file__).resolve().parent / "out" / run_id / "manifest.json"
+    if not base.exists():
+        return None
+    try:
+        return json.loads(base.read_text())
+    except Exception:
+        return None
 
 
 def _load_runs(conn: sqlite3.Connection) -> Dict[str, RunMeta]:
@@ -86,34 +137,71 @@ def _load_run_ids_ordered(conn: sqlite3.Connection) -> List[str]:
 
 
 def _load_run_summary(conn: sqlite3.Connection, run_id: str) -> Optional[dict]:
-    row = conn.execute(
-        """
-        SELECT run_id, trade_count, mined_trades, reverted_trades, buy_trades, sell_trades,
-               swap_events, mint_events, anchor_price, anchor_day,
-               total_volume_token_in, total_volume_weth_in, price_days, market_days
-        FROM run_summary WHERE run_id=?
-        """,
-        (run_id,),
-    ).fetchone()
+    has_weth_total = _table_has_column(conn, "run_summary", "total_volume_weth_total")
+    if has_weth_total:
+        row = conn.execute(
+            """
+            SELECT run_id, trade_count, mined_trades, reverted_trades, buy_trades, sell_trades,
+                   swap_events, mint_events, anchor_price, anchor_day,
+                   total_volume_token_in, total_volume_weth_in, total_volume_weth_total, price_days, market_days
+            FROM run_summary WHERE run_id=?
+            """,
+            (run_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT run_id, trade_count, mined_trades, reverted_trades, buy_trades, sell_trades,
+                   swap_events, mint_events, anchor_price, anchor_day,
+                   total_volume_token_in, total_volume_weth_in, price_days, market_days
+            FROM run_summary WHERE run_id=?
+            """,
+            (run_id,),
+        ).fetchone()
     if not row:
         return None
-    keys = [
-        "run_id",
-        "trade_count",
-        "mined_trades",
-        "reverted_trades",
-        "buy_trades",
-        "sell_trades",
-        "swap_events",
-        "mint_events",
-        "anchor_price",
-        "anchor_day",
-        "total_volume_token_in",
-        "total_volume_weth_in",
-        "price_days",
-        "market_days",
-    ]
-    return dict(zip(keys, row))
+    if has_weth_total:
+        keys = [
+            "run_id",
+            "trade_count",
+            "mined_trades",
+            "reverted_trades",
+            "buy_trades",
+            "sell_trades",
+            "swap_events",
+            "mint_events",
+            "anchor_price",
+            "anchor_day",
+            "total_volume_token_in",
+            "total_volume_weth_in",
+            "total_volume_weth_total",
+            "price_days",
+            "market_days",
+        ]
+        return dict(zip(keys, row))
+    out = dict(
+        zip(
+            [
+                "run_id",
+                "trade_count",
+                "mined_trades",
+                "reverted_trades",
+                "buy_trades",
+                "sell_trades",
+                "swap_events",
+                "mint_events",
+                "anchor_price",
+                "anchor_day",
+                "total_volume_token_in",
+                "total_volume_weth_in",
+                "price_days",
+                "market_days",
+            ],
+            row,
+        )
+    )
+    out["total_volume_weth_total"] = out.get("total_volume_weth_in")
+    return out
 
 
 def _load_daily_prices(conn: sqlite3.Connection, run_id: str) -> List[dict]:
@@ -178,6 +266,32 @@ def _load_run_stats(conn: sqlite3.Connection, run_id: str) -> Dict[str, str]:
     return {str(k): str(v) for k, v in rows}
 
 
+def _get_sim_max_day(conn: sqlite3.Connection, run_id: str) -> Optional[int]:
+    """
+    Return the maximum simulation day available for a run from any day-indexed table.
+    """
+    day_tables = [
+        "run_factors_daily",
+        "run_fair_value_daily",
+        "run_circulating_supply_daily",
+        "run_wallet_balances_daily",
+        "run_trades",
+    ]
+    max_days: List[int] = []
+    for table in day_tables:
+        if not _table_exists(conn, table):
+            continue
+        row = conn.execute(
+            f"SELECT MAX(day) FROM {table} WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if row and row[0] is not None:
+            max_days.append(int(row[0]))
+    if not max_days:
+        return None
+    return max(max_days)
+
+
 def _load_daily_close_prices(conn: sqlite3.Connection, run_id: str) -> List[dict]:
     """
     Compute daily close prices from swap prices + run_stats day0_block/blocks_per_day.
@@ -193,79 +307,133 @@ def _load_daily_close_prices(conn: sqlite3.Connection, run_id: str) -> List[dict
             """,
             (run_id,),
         ).fetchall()
-        return [{"day": int(day), "avg_normalized_price": float(price)} for day, price in rows]
-    if not _table_exists(conn, "run_swap_prices"):
-        return _load_daily_prices(conn, run_id)
-    stats = _load_run_stats(conn, run_id)
-    day0_block = int(stats.get("day0_block", "0") or 0)
-    blocks_per_day = int(stats.get("blocks_per_day", "100") or 100)
-    if day0_block <= 0 or blocks_per_day <= 0:
-        return _load_daily_prices(conn, run_id)
+        sparse = [{"day": int(day), "avg_normalized_price": float(price)} for day, price in rows]
+    elif not _table_exists(conn, "run_swap_prices"):
+        sparse = _load_daily_prices(conn, run_id)
+    else:
+        stats = _load_run_stats(conn, run_id)
+        day0_block = int(stats.get("day0_block", "0") or 0)
+        blocks_per_day = int(stats.get("blocks_per_day", "100") or 100)
+        if day0_block <= 0 or blocks_per_day <= 0:
+            sparse = _load_daily_prices(conn, run_id)
+        else:
+            rows = conn.execute(
+                """
+                SELECT block_number, normalized_price
+                FROM run_swap_prices
+                WHERE run_id=?
+                ORDER BY block_number ASC
+                """,
+                (run_id,),
+            ).fetchall()
+            if not rows:
+                sparse = _load_daily_prices(conn, run_id)
+            else:
+                closes: Dict[int, float] = {}
+                for block_number, price in rows:
+                    day = int((int(block_number) - day0_block) // blocks_per_day)
+                    closes[day] = float(price)
+                sparse = [{"day": day, "avg_normalized_price": price} for day, price in sorted(closes.items())]
 
-    rows = conn.execute(
-        """
-        SELECT block_number, normalized_price
-        FROM run_swap_prices
-        WHERE run_id=?
-        ORDER BY block_number ASC
-        """,
-        (run_id,),
-    ).fetchall()
-    if not rows:
-        return _load_daily_prices(conn, run_id)
+    if not sparse:
+        return sparse
 
-    closes: Dict[int, float] = {}
-    for block_number, price in rows:
-        day = int((int(block_number) - day0_block) // blocks_per_day)
-        closes[day] = float(price)
-    return [{"day": day, "avg_normalized_price": price} for day, price in sorted(closes.items())]
+    sim_max_day = _get_sim_max_day(conn, run_id)
+    if sim_max_day is None:
+        return sparse
+    if int(sparse[-1]["day"]) >= sim_max_day:
+        return sparse
+
+    by_day = {int(r["day"]): float(r["avg_normalized_price"]) for r in sparse}
+    first_price = float(sparse[0]["avg_normalized_price"])
+    dense: List[dict] = []
+    prev_price = first_price
+    for day in range(sim_max_day + 1):
+        price = by_day.get(day)
+        if price is not None:
+            prev_price = float(price)
+        dense.append({"day": int(day), "avg_normalized_price": float(prev_price)})
+    return dense
 
 
 def _load_daily_market(conn: sqlite3.Connection, run_id: str) -> List[dict]:
     if not _table_exists(conn, "run_daily_market"):
         return []
-    rows = conn.execute(
-        """
-        SELECT day, swap_count, volume_token_in, volume_weth_in, avg_tick
-        FROM run_daily_market
-        WHERE run_id=?
-        ORDER BY day ASC
-        """,
-        (run_id,),
-    ).fetchall()
-    return [
-        {
-            "day": int(day),
-            "swap_count": int(cnt),
-            "volume_token_in": float(vt),
-            "volume_weth_in": float(vw),
-            "avg_tick": float(tick),
-        }
-        for day, cnt, vt, vw, tick in rows
-    ]
-
-
-def _load_daily_returns(conn: sqlite3.Connection, run_id: str) -> List[dict]:
-    if _table_has_column(conn, "run_daily_prices", "close_normalized_price"):
+    has_weth_total = _table_has_column(conn, "run_daily_market", "volume_weth_total")
+    if has_weth_total:
         rows = conn.execute(
             """
-            SELECT day, close_normalized_price
-            FROM run_daily_prices
+            SELECT day, swap_count, volume_token_in, volume_weth_in, volume_weth_total, avg_tick
+            FROM run_daily_market
             WHERE run_id=?
             ORDER BY day ASC
             """,
             (run_id,),
         ).fetchall()
+        sparse = [
+            {
+                "day": int(day),
+                "swap_count": int(cnt),
+                "volume_token_in": float(vt),
+                "volume_weth_in": float(vw),
+                "volume_weth_total": float(vwt),
+                "avg_tick": float(tick),
+            }
+            for day, cnt, vt, vw, vwt, tick in rows
+        ]
     else:
         rows = conn.execute(
             """
-            SELECT day, avg_normalized_price
-            FROM run_daily_prices
+            SELECT day, swap_count, volume_token_in, volume_weth_in, avg_tick
+            FROM run_daily_market
             WHERE run_id=?
             ORDER BY day ASC
             """,
             (run_id,),
         ).fetchall()
+        sparse = [
+            {
+                "day": int(day),
+                "swap_count": int(cnt),
+                "volume_token_in": float(vt),
+                "volume_weth_in": float(vw),
+                "volume_weth_total": float(vw),
+                "avg_tick": float(tick),
+            }
+            for day, cnt, vt, vw, tick in rows
+        ]
+    if not sparse:
+        return sparse
+
+    sim_max_day = _get_sim_max_day(conn, run_id)
+    if sim_max_day is None:
+        return sparse
+    if int(sparse[-1]["day"]) >= sim_max_day:
+        return sparse
+
+    by_day = {int(r["day"]): r for r in sparse}
+    dense: List[dict] = []
+    for day in range(sim_max_day + 1):
+        r = by_day.get(day)
+        if r is None:
+            dense.append(
+                {
+                    "day": int(day),
+                    "swap_count": 0,
+                    "volume_token_in": 0.0,
+                    "volume_weth_in": 0.0,
+                    "volume_weth_total": 0.0,
+                    "avg_tick": 0.0,
+                }
+            )
+        else:
+            dense.append(r)
+    return dense
+
+
+def _load_daily_returns(conn: sqlite3.Connection, run_id: str) -> List[dict]:
+    closes = _load_daily_close_prices(conn, run_id)
+    rows = [(int(r["day"]), float(r["avg_normalized_price"])) for r in closes]
     if len(rows) < 2:
         return []
     # Drop the last day to avoid partial-day artifacts at run boundaries.
@@ -338,6 +506,70 @@ def _load_fair_values(conn: sqlite3.Connection, run_id: str) -> List[dict]:
     else:
         rows = []
     return [{"day": int(day), "fair_value": float(val)} for day, val in rows]
+
+
+def _load_regime_trace(conn: sqlite3.Connection, run_id: str) -> List[dict]:
+    """
+    Load regime trace.
+    Preferred path uses exact stored regime_code from run_factors_daily:
+      0=bear, 1=bull, 2=hype
+    Fallback for older runs infers from launch_mult/sentiment.
+    """
+    if not _table_exists(conn, "run_factors_daily"):
+        return []
+    has_regime_code = _table_has_column(conn, "run_factors_daily", "regime_code")
+    if has_regime_code:
+        rows = conn.execute(
+            """
+            SELECT day, sentiment, regime_code, launch_mult
+            FROM run_factors_daily
+            WHERE run_id=?
+            ORDER BY day ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT day, sentiment, NULL as regime_code, launch_mult
+            FROM run_factors_daily
+            WHERE run_id=?
+            ORDER BY day ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    out: List[dict] = []
+    for day, sentiment, regime_code_raw, launch_mult in rows:
+        sent = float(sentiment)
+        if regime_code_raw is not None:
+            regime_code = int(regime_code_raw)
+            if regime_code == 2:
+                regime = "hype"
+            elif regime_code == 1:
+                regime = "bull"
+            else:
+                regime = "bear"
+        else:
+            # Backward-compatible fallback for legacy runs.
+            hype_flag = float(launch_mult)
+            if hype_flag >= 0.5:
+                regime = "hype"
+                regime_code = 2
+            elif sent >= 0.0:
+                regime = "bull"
+                regime_code = 1
+            else:
+                regime = "bear"
+                regime_code = 0
+        out.append(
+            {
+                "day": int(day),
+                "regime": regime,
+                "regime_code": int(regime_code),
+                "sentiment": sent,
+            }
+        )
+    return out
 
 
 def _load_perceived_fair_values(conn: sqlite3.Connection, run_id: str) -> List[dict]:
@@ -438,6 +670,661 @@ def _load_repeat_buy_rates(conn: sqlite3.Connection) -> Dict[str, dict]:
     return rates
 
 
+def _to_token_units(raw_wei: object) -> float:
+    try:
+        return float(int(str(raw_wei))) / 1e18
+    except Exception:
+        return 0.0
+
+
+def _binomial_ci(successes: int, n: int, z: float = 1.96) -> Tuple[float, float]:
+    if n <= 0:
+        return 0.0, 0.0
+    p = max(0.0, min(1.0, float(successes) / float(n)))
+    denom = 1.0 + (z * z) / n
+    center = (p + (z * z) / (2.0 * n)) / denom
+    margin = (z * math.sqrt((p * (1.0 - p) + (z * z) / (4.0 * n)) / n)) / denom
+    lo = max(0.0, center - margin)
+    hi = min(1.0, center + margin)
+    return lo, hi
+
+
+def _mean_ci(vals: List[float], z: float = 1.96) -> Tuple[float, float, float]:
+    if not vals:
+        return 0.0, 0.0, 0.0
+    n = len(vals)
+    mean_v = float(sum(vals)) / float(n)
+    if n < 2:
+        return mean_v, mean_v, mean_v
+    std_v = statistics.pstdev(vals)
+    se = std_v / math.sqrt(float(n))
+    lo = mean_v - (z * se)
+    hi = mean_v + (z * se)
+    return mean_v, lo, hi
+
+
+def _median_ci(vals: List[float], n_boot: int = 250) -> Tuple[float, float, float]:
+    if not vals:
+        return 0.0, 0.0, 0.0
+    med = float(statistics.median(vals))
+    if len(vals) < 2:
+        return med, med, med
+    rng = random.Random(42 + len(vals))
+    boots: List[float] = []
+    n = len(vals)
+    for _ in range(max(50, n_boot)):
+        sample = [vals[rng.randrange(n)] for _ in range(n)]
+        boots.append(float(statistics.median(sample)))
+    boots.sort()
+    lo_idx = max(0, int(0.025 * len(boots)))
+    hi_idx = min(len(boots) - 1, int(0.975 * len(boots)))
+    return med, boots[lo_idx], boots[hi_idx]
+
+
+def _load_cohort_run_data(conn: sqlite3.Connection, run_id: str) -> Optional[CohortRunData]:
+    required_tables = ["run_wallet_cohorts", "run_wallet_balances_daily", "run_agents", "run_trades"]
+    for t in required_tables:
+        if not _table_exists(conn, t):
+            return None
+
+    cohort_rows = conn.execute(
+        """
+        SELECT address, eligible
+        FROM run_wallet_cohorts
+        WHERE run_id=?
+        ORDER BY address ASC
+        """,
+        (run_id,),
+    ).fetchall()
+    if not cohort_rows:
+        return None
+
+    eligible_wallets: List[str] = []
+    control_wallets: List[str] = []
+    eligible_by_addr: Dict[str, int] = {}
+    for addr, eligible in cohort_rows:
+        a = str(addr).lower()
+        e = int(eligible or 0)
+        eligible_by_addr[a] = e
+        if e == 1:
+            eligible_wallets.append(a)
+        else:
+            control_wallets.append(a)
+
+    balances_rows = conn.execute(
+        """
+        SELECT day, address, token_balance_raw
+        FROM run_wallet_balances_daily
+        WHERE run_id=?
+        ORDER BY day ASC, address ASC
+        """,
+        (run_id,),
+    ).fetchall()
+    max_day = _get_sim_max_day(conn, run_id) or 0
+    if balances_rows:
+        max_day = max(max_day, max(int(r[0]) for r in balances_rows))
+
+    balances_by_wallet: Dict[str, List[Optional[float]]] = {
+        w: [None] * (max_day + 1) for w in eligible_by_addr.keys()
+    }
+    for day, addr, bal_raw in balances_rows:
+        a = str(addr).lower()
+        if a not in balances_by_wallet:
+            continue
+        d = int(day)
+        if 0 <= d <= max_day:
+            balances_by_wallet[a][d] = _to_token_units(bal_raw)
+
+    for w, series in balances_by_wallet.items():
+        prev = 0.0
+        for i in range(len(series)):
+            if series[i] is None:
+                series[i] = prev
+            else:
+                prev = float(series[i])
+        balances_by_wallet[w] = [float(x or 0.0) for x in series]
+
+    price_by_day: Dict[int, float] = {}
+    if _table_exists(conn, "run_daily_prices"):
+        for day, avg_price in conn.execute(
+            """
+            SELECT day, avg_price_weth_per_token
+            FROM run_daily_prices
+            WHERE run_id=?
+            """,
+            (run_id,),
+        ).fetchall():
+            try:
+                price_by_day[int(day)] = float(avg_price)
+            except Exception:
+                pass
+
+    buy_counts_by_day: Dict[int, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    buy_tokens_by_day: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    sell_tokens_by_day: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    total_buy_counts: Dict[str, int] = {w: 0 for w in eligible_by_addr.keys()}
+    total_buy_tokens: Dict[str, float] = {w: 0.0 for w in eligible_by_addr.keys()}
+
+    trade_rows = conn.execute(
+        """
+        SELECT t.day, LOWER(a.address), t.side, t.amount_in_wei
+        FROM run_trades t
+        JOIN run_agents a
+          ON t.run_id = a.run_id AND t.agent_id = a.agent_id
+        WHERE t.run_id=?
+          AND t.status IN ('MINED', 'AGG_INTENT')
+        ORDER BY t.day ASC, t.id ASC
+        """,
+        (run_id,),
+    ).fetchall()
+
+    for day, addr, side, amount_in_wei in trade_rows:
+        a = str(addr).lower()
+        if a not in eligible_by_addr:
+            continue
+        d = int(day)
+        if d < 0:
+            continue
+        amount = _to_token_units(amount_in_wei)
+        side_u = str(side).upper()
+        if side_u == "BUY":
+            px = float(price_by_day.get(d, 0.0))
+            bought_tokens = (amount / px) if px > 0 else 0.0
+            buy_counts_by_day[d][a] += 1
+            buy_tokens_by_day[d][a] += bought_tokens
+            total_buy_counts[a] += 1
+            total_buy_tokens[a] += bought_tokens
+        elif side_u == "SELL":
+            sell_tokens_by_day[d][a] += amount
+
+    manifest = _load_manifest_for_run(run_id) or {}
+    try:
+        threshold_tokens = max(0.0, float(manifest.get("nft_threshold_tokens", 0.00015)))
+    except Exception:
+        threshold_tokens = 0.00015
+
+    threshold_cross_day: Dict[str, Optional[int]] = {}
+    for a in eligible_by_addr.keys():
+        if threshold_tokens <= 0:
+            threshold_cross_day[a] = None
+            continue
+        series = balances_by_wallet.get(a, [])
+        cross_day: Optional[int] = None
+        for d, held in enumerate(series):
+            if float(held) >= threshold_tokens:
+                cross_day = d
+                break
+        threshold_cross_day[a] = cross_day
+
+    eligible_hit_wallets = [w for w in eligible_wallets if threshold_cross_day.get(w) is not None]
+    eligible_not_hit_wallets = [w for w in eligible_wallets if threshold_cross_day.get(w) is None]
+    wallets_by_group = {
+        "eligible_hit_threshold": eligible_hit_wallets,
+        "eligible_not_hit_threshold": eligible_not_hit_wallets,
+        "control": control_wallets,
+    }
+
+    return CohortRunData(
+        run_id=run_id,
+        max_day=max_day,
+        threshold_tokens=threshold_tokens,
+        wallets_by_cohort={"eligible": eligible_wallets, "control": control_wallets},
+        wallets_by_group=wallets_by_group,
+        balances_by_wallet={k: [float(v) for v in vals] for k, vals in balances_by_wallet.items()},
+        buy_counts_by_day={int(k): dict(v) for k, v in buy_counts_by_day.items()},
+        buy_tokens_by_day={int(k): dict(v) for k, v in buy_tokens_by_day.items()},
+        sell_tokens_by_day={int(k): dict(v) for k, v in sell_tokens_by_day.items()},
+        total_buy_counts=total_buy_counts,
+        total_buy_tokens=total_buy_tokens,
+        threshold_cross_day=threshold_cross_day,
+    )
+
+
+def _load_cohort_analytics(conn: sqlite3.Connection, run_ids: List[str]) -> Dict[str, CohortRunData]:
+    out: Dict[str, CohortRunData] = {}
+    for run_id in run_ids:
+        data = _load_cohort_run_data(conn, run_id)
+        if data is not None:
+            out[run_id] = data
+    return out
+
+
+def _plot_repeat_buy_rate_rolling7(outdir: Path, cohort_data: Dict[str, CohortRunData], window: int = 7) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not cohort_data:
+        return None
+    max_day = max(d.max_day for d in cohort_data.values())
+    days = list(range(0, max_day + 1))
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for group_key, group_label, color in COHORT_GROUPS:
+        median_rate: List[float] = []
+        lo: List[float] = []
+        hi: List[float] = []
+        group_total_n = sum(len(d.wallets_by_group.get(group_key, [])) for d in cohort_data.values())
+        for day in days:
+            run_rates: List[float] = []
+            for d in cohort_data.values():
+                wallets = d.wallets_by_group.get(group_key, [])
+                n = len(wallets)
+                if n <= 0:
+                    continue
+                start = max(0, day - window + 1)
+                successes = 0
+                for w in wallets:
+                    window_buys = 0
+                    for k in range(start, day + 1):
+                        window_buys += int(d.buy_counts_by_day.get(k, {}).get(w, 0))
+                    if window_buys >= 2:
+                        successes += 1
+                run_rates.append(float(successes) / float(n))
+            med, ci_lo, ci_hi = _median_ci(run_rates)
+            median_rate.append(med)
+            lo.append(ci_lo)
+            hi.append(ci_hi)
+
+        ax.plot(days, median_rate, color=color, label=f"{group_label} (N={group_total_n})")
+        ax.fill_between(days, lo, hi, color=color, alpha=0.18)
+
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title("Rolling 7-day median repeat-buy rate by static cohort (buy_count >= 2)")
+    ax.set_xlabel("Day (sim)")
+    ax.set_ylabel("Median repeat-buy rate across runs")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    out = outdir / "cohort_repeat_buy_rate_rolling7.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
+def _plot_retention_curve(outdir: Path, cohort_data: Dict[str, CohortRunData]) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not cohort_data:
+        return None
+    max_day = max(d.max_day for d in cohort_data.values())
+    days = list(range(0, max_day + 1))
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for group_key, group_label, color in COHORT_GROUPS:
+        rate: List[float] = []
+        lo: List[float] = []
+        hi: List[float] = []
+        group_total_n = sum(len(d.wallets_by_group.get(group_key, [])) for d in cohort_data.values())
+        for day in days:
+            run_rates: List[float] = []
+            for d in cohort_data.values():
+                wallets = d.wallets_by_group.get(group_key, [])
+                if not wallets:
+                    continue
+                active = 0
+                n = 0
+                for w in wallets:
+                    series = d.balances_by_wallet.get(w, [])
+                    if day < len(series):
+                        n += 1
+                        if float(series[day]) > 0.0:
+                            active += 1
+                if n > 0:
+                    run_rates.append(float(active) / float(n))
+            med, ci_lo, ci_hi = _median_ci(run_rates)
+            rate.append(med)
+            lo.append(ci_lo)
+            hi.append(ci_hi)
+        ax.plot(days, rate, color=color, label=f"{group_label} (N={group_total_n})")
+        ax.fill_between(days, lo, hi, color=color, alpha=0.18)
+
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title("Median retention / survival by static cohort (active = token balance > 0)")
+    ax.set_xlabel("Day (sim)")
+    ax.set_ylabel("Median active wallet share across runs")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    out = outdir / "cohort_retention_curve.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
+def _plot_buy_intensity_distributions(outdir: Path, cohort_data: Dict[str, CohortRunData]) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not cohort_data:
+        return None
+
+    group_keys = [key for key, _, _ in COHORT_GROUPS]
+    buys: Dict[str, List[float]] = {k: [] for k in group_keys}
+    tokens: Dict[str, List[float]] = {k: [] for k in group_keys}
+    for d in cohort_data.values():
+        for group_key, _, _ in COHORT_GROUPS:
+            for w in d.wallets_by_group.get(group_key, []):
+                buys[group_key].append(float(d.total_buy_counts.get(w, 0)))
+                tokens[group_key].append(float(d.total_buy_tokens.get(w, 0.0)))
+
+    if not any(buys[k] for k in group_keys):
+        return None
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    bins_buys = 20
+    bins_tokens = 24
+
+    for group_key, group_label, color in COHORT_GROUPS:
+        if buys[group_key]:
+            axes[0][0].hist(
+                buys[group_key],
+                bins=bins_buys,
+                alpha=0.35,
+                label=f"{group_label} (N={len(buys[group_key])})",
+                color=color,
+            )
+            xs = sorted(buys[group_key])
+            ys = [(i + 1) / len(xs) for i in range(len(xs))]
+            axes[0][1].plot(xs, ys, label=f"{group_label} (N={len(xs)})", color=color)
+        if tokens[group_key]:
+            axes[1][0].hist(
+                tokens[group_key],
+                bins=bins_tokens,
+                alpha=0.35,
+                label=f"{group_label} (N={len(tokens[group_key])})",
+                color=color,
+            )
+            xs_t = sorted(tokens[group_key])
+            ys_t = [(i + 1) / len(xs_t) for i in range(len(xs_t))]
+            axes[1][1].plot(xs_t, ys_t, label=f"{group_label} (N={len(xs_t)})", color=color)
+
+    for group_key, group_label, color in COHORT_GROUPS:
+        if buys[group_key]:
+            med, lo, hi = _median_ci(buys[group_key])
+            axes[0][0].axvline(med, linestyle="--", linewidth=1.2, color=color)
+            axes[0][0].text(
+                med,
+                axes[0][0].get_ylim()[1] * (0.92 - 0.08 * COHORT_GROUPS.index((group_key, group_label, color))),
+                f"{group_label} med={med:.2f}\n95% CI [{lo:.2f},{hi:.2f}]",
+                color=color,
+                fontsize=8,
+            )
+        if tokens[group_key]:
+            med_t, lo_t, hi_t = _median_ci(tokens[group_key])
+            axes[1][0].axvline(med_t, linestyle="--", linewidth=1.2, color=color)
+            axes[1][0].text(
+                med_t,
+                axes[1][0].get_ylim()[1] * (0.92 - 0.08 * COHORT_GROUPS.index((group_key, group_label, color))),
+                f"{group_label} med={med_t:.4f}\n95% CI [{lo_t:.4f},{hi_t:.4f}]",
+                color=color,
+                fontsize=8,
+            )
+
+    axes[0][0].set_title("Buys per wallet (histogram)")
+    axes[0][0].set_xlabel("Buy count")
+    axes[0][0].set_ylabel("Wallet frequency")
+    axes[0][0].grid(True, linestyle="--", alpha=0.3)
+    axes[0][0].legend()
+
+    axes[0][1].set_title("Buys per wallet (CDF)")
+    axes[0][1].set_xlabel("Buy count")
+    axes[0][1].set_ylabel("CDF")
+    axes[0][1].grid(True, linestyle="--", alpha=0.3)
+    axes[0][1].legend()
+
+    axes[1][0].set_title("Token bought per wallet (histogram)")
+    axes[1][0].set_xlabel("Token bought")
+    axes[1][0].set_ylabel("Wallet frequency")
+    axes[1][0].grid(True, linestyle="--", alpha=0.3)
+    axes[1][0].legend()
+
+    axes[1][1].set_title("Token bought per wallet (CDF)")
+    axes[1][1].set_xlabel("Token bought")
+    axes[1][1].set_ylabel("CDF")
+    axes[1][1].grid(True, linestyle="--", alpha=0.3)
+    axes[1][1].legend()
+
+    out = outdir / "cohort_buy_intensity_distributions.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
+def _plot_net_flow_median_by_cohort(outdir: Path, cohort_data: Dict[str, CohortRunData]) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not cohort_data:
+        return None
+    max_day = max(d.max_day for d in cohort_data.values())
+    if max_day <= 0:
+        return None
+    days = list(range(1, max_day + 1))
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for group_key, group_label, color in COHORT_GROUPS:
+        med_series: List[float] = []
+        lo_series: List[float] = []
+        hi_series: List[float] = []
+        cohort_n = sum(len(d.wallets_by_group.get(group_key, [])) for d in cohort_data.values())
+        for day in days:
+            vals: List[float] = []
+            for d in cohort_data.values():
+                for w in d.wallets_by_group.get(group_key, []):
+                    s = d.balances_by_wallet.get(w, [])
+                    if day < len(s):
+                        vals.append(float(s[day]) - float(s[day - 1]))
+            med, lo, hi = _median_ci(vals)
+            med_series.append(med)
+            lo_series.append(lo)
+            hi_series.append(hi)
+        ax.plot(days, med_series, color=color, label=f"{group_label} (N={cohort_n})")
+        ax.fill_between(days, lo_series, hi_series, color=color, alpha=0.18)
+
+    ax.axhline(0.0, color="#666666", linestyle="--", linewidth=1.0)
+    ax.set_title("Daily median net token flow per wallet by cohort (balance delta)")
+    ax.set_xlabel("Day (sim)")
+    ax.set_ylabel("Median token flow (buy - sell proxy)")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    out = outdir / "cohort_net_flow_median_timeseries.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
+def _plot_median_holdings_bar(outdir: Path, cohort_data: Dict[str, CohortRunData]) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not cohort_data:
+        return None
+
+    group_keys = [key for key, _, _ in COHORT_GROUPS]
+    final_vals = {k: [] for k in group_keys}
+    for d in cohort_data.values():
+        for group_key, _, _ in COHORT_GROUPS:
+            for w in d.wallets_by_group.get(group_key, []):
+                s = d.balances_by_wallet.get(w, [])
+                if s:
+                    final_vals[group_key].append(float(s[-1]))
+
+    if not any(final_vals[k] for k in group_keys):
+        return None
+
+    cohorts = [k for k, _, _ in COHORT_GROUPS]
+    meds: List[float] = []
+    lo_err: List[float] = []
+    hi_err: List[float] = []
+    labels: List[str] = []
+    for c in cohorts:
+        med, lo, hi = _median_ci(final_vals[c])
+        meds.append(med)
+        lo_err.append(max(0.0, med - lo))
+        hi_err.append(max(0.0, hi - med))
+        labels.append(f"{_cohort_group_label(c)}\nN={len(final_vals[c])}")
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+    x = list(range(len(cohorts)))
+    colors = [_cohort_group_color(c) for c in cohorts]
+    ax.bar(x, meds, color=colors, alpha=0.85)
+    ax.errorbar(x, meds, yerr=[lo_err, hi_err], fmt="none", ecolor="black", capsize=5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Median token held per wallet")
+    ax.set_title("Median token held per wallet by cohort (final day, 95% CI)")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+    out = outdir / "cohort_median_token_held_bar.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
+def _plot_median_holdings_timeseries(outdir: Path, cohort_data: Dict[str, CohortRunData]) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not cohort_data:
+        return None
+    max_day = max(d.max_day for d in cohort_data.values())
+    days = list(range(0, max_day + 1))
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for group_key, group_label, color in COHORT_GROUPS:
+        med_series: List[float] = []
+        lo_series: List[float] = []
+        hi_series: List[float] = []
+        cohort_n = sum(len(d.wallets_by_group.get(group_key, [])) for d in cohort_data.values())
+        for day in days:
+            vals: List[float] = []
+            for d in cohort_data.values():
+                for w in d.wallets_by_group.get(group_key, []):
+                    s = d.balances_by_wallet.get(w, [])
+                    if day < len(s):
+                        vals.append(float(s[day]))
+            med, lo, hi = _median_ci(vals)
+            med_series.append(med)
+            lo_series.append(lo)
+            hi_series.append(hi)
+        ax.plot(days, med_series, color=color, label=f"{group_label} (N={cohort_n})")
+        ax.fill_between(days, lo_series, hi_series, color=color, alpha=0.18)
+    ax.set_title("Median token held per wallet over time by static cohort")
+    ax.set_xlabel("Day (sim)")
+    ax.set_ylabel("Median token held")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    out = outdir / "cohort_median_token_held_timeseries.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
+def _plot_avg_holdings_prepost_control(outdir: Path, cohort_data: Dict[str, CohortRunData]) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not cohort_data:
+        return None
+    max_day = max(d.max_day for d in cohort_data.values())
+    days = list(range(0, max_day + 1))
+    fig, ax = plt.subplots(figsize=(10, 6))
+    series_map = {g[0]: {"median": [], "lo": [], "hi": [], "n": 0} for g in COHORT_GROUPS}
+
+    for day in days:
+        vals_by_group: Dict[str, List[float]] = {k: [] for k, _, _ in COHORT_GROUPS}
+        for d in cohort_data.values():
+            for group_key, _, _ in COHORT_GROUPS:
+                for w in d.wallets_by_group.get(group_key, []):
+                    s = d.balances_by_wallet.get(w, [])
+                    if day < len(s):
+                        vals_by_group[group_key].append(float(s[day]))
+
+        for g, _, _ in COHORT_GROUPS:
+            m, lo, hi = _median_ci(vals_by_group[g])
+            series_map[g]["median"].append(m)
+            series_map[g]["lo"].append(lo)
+            series_map[g]["hi"].append(hi)
+            series_map[g]["n"] = max(series_map[g]["n"], len(vals_by_group[g]))
+
+    for g, label, color in COHORT_GROUPS:
+        ax.plot(days, series_map[g]["median"], color=color, label=f"{label} (N~{series_map[g]['n']})")
+        ax.fill_between(days, series_map[g]["lo"], series_map[g]["hi"], color=color, alpha=0.16)
+
+    ax.set_title("Median token held: static cohort split (smoothed view)")
+    ax.set_xlabel("Day (sim)")
+    ax.set_ylabel("Median token held")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    out = outdir / "cohort_avg_token_held_prepost_control.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
+def _plot_threshold_event_window(outdir: Path, cohort_data: Dict[str, CohortRunData], window: int = 14) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not cohort_data:
+        return None
+
+    rel_days = list(range(-window, window + 1))
+    vals_by_group: Dict[str, Dict[int, List[float]]] = {
+        key: defaultdict(list) for key, _, _ in COHORT_GROUPS
+    }
+    aligned_counts: Dict[str, int] = {key: 0 for key, _, _ in COHORT_GROUPS}
+
+    global_cross_days: List[int] = []
+    for d in cohort_data.values():
+        for w in d.wallets_by_group.get("eligible_hit_threshold", []):
+            cross = d.threshold_cross_day.get(w)
+            if cross is not None:
+                global_cross_days.append(int(cross))
+    if not global_cross_days:
+        return None
+
+    fallback_day = int(statistics.median(global_cross_days))
+    rng = random.Random(4242)
+
+    for d in cohort_data.values():
+        run_cross_days = [
+            int(d.threshold_cross_day[w])
+            for w in d.wallets_by_group.get("eligible_hit_threshold", [])
+            if d.threshold_cross_day.get(w) is not None
+        ]
+        for group_key, _, _ in COHORT_GROUPS:
+            wallets = d.wallets_by_group.get(group_key, [])
+            for w in wallets:
+                if group_key == "eligible_hit_threshold":
+                    cross = d.threshold_cross_day.get(w)
+                    if cross is None:
+                        continue
+                    align_day = int(cross)
+                else:
+                    source_days = run_cross_days if run_cross_days else global_cross_days
+                    align_day = int(rng.choice(source_days)) if source_days else fallback_day
+                s = d.balances_by_wallet.get(w, [])
+                if not s:
+                    continue
+                aligned_counts[group_key] += 1
+                for k in rel_days:
+                    day = align_day + k
+                    if 0 <= day < len(s):
+                        vals_by_group[group_key][k].append(float(s[day]))
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for group_key, group_label, color in COHORT_GROUPS:
+        med_s: List[float] = []
+        lo_s: List[float] = []
+        hi_s: List[float] = []
+        for k in rel_days:
+            m, lo, hi = _median_ci(vals_by_group[group_key].get(k, []))
+            med_s.append(m)
+            lo_s.append(lo)
+            hi_s.append(hi)
+        ax.plot(rel_days, med_s, color=color, label=f"{group_label} (N={aligned_counts[group_key]})")
+        ax.fill_between(rel_days, lo_s, hi_s, color=color, alpha=0.16)
+
+    ax.axvline(0, color="#555555", linestyle="--", linewidth=1.0)
+    ax.set_title("Pre/post threshold-aligned median token held by static cohort")
+    ax.set_xlabel("Days relative to threshold crossing")
+    ax.set_ylabel("Median token held")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
+    out = outdir / "cohort_threshold_event_window.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
 def _merge_daily_series(
     series_by_run: Dict[str, List[dict]],
     value_key: str,
@@ -500,18 +1387,22 @@ def _plot_volume_and_swaps(outdir: Path, daily_market_by_run: Dict[str, List[dic
         return None
     fig, ax1 = plt.subplots(figsize=(10, 6))
     ax2 = ax1.twinx()
-    merged_vols = _merge_daily_series(daily_market_by_run, "volume_weth_in", drop_last_day=True)
+    merged_weth_in = _merge_daily_series(daily_market_by_run, "volume_weth_in", drop_last_day=True)
+    merged_weth_total = _merge_daily_series(daily_market_by_run, "volume_weth_total", drop_last_day=True)
     merged_swaps = _merge_daily_series(daily_market_by_run, "swap_count", drop_last_day=True)
-    days = [r["day"] for r in merged_vols]
-    vols = [r["volume_weth_in"] for r in merged_vols]
+    days = [r["day"] for r in merged_weth_in]
+    vols_in = [r["volume_weth_in"] for r in merged_weth_in]
+    vols_total = [r["volume_weth_total"] for r in merged_weth_total] if merged_weth_total else vols_in
     swaps = [r["swap_count"] for r in merged_swaps]
-    ax1.plot(days, vols, marker="o", label="volume")
+    ax1.plot(days, vols_in, marker="o", label="buy-side WETH in (weth_in)")
+    ax1.plot(days, vols_total, marker=".", linestyle="--", label="gross WETH volume (weth_total)")
     ax2.plot(days, swaps, marker="s", linestyle="--", label="swaps")
-    ax1.set_title("Daily volume (WETH) and swap count (all runs)")
+    ax1.set_title("Daily WETH volume (buy-side vs gross) and swap count (all runs)")
     ax1.set_xlabel("Day (sim)")
-    ax1.set_ylabel("Volume WETH in")
+    ax1.set_ylabel("Volume (WETH)")
     ax2.set_ylabel("Swap count")
     ax1.grid(True, linestyle="--", alpha=0.4)
+    ax1.legend(loc="upper left")
     out = outdir / "volume_and_swaps.png"
     fig.tight_layout()
     fig.savefig(out, dpi=150)
@@ -524,14 +1415,18 @@ def _plot_market_volume(outdir: Path, daily_market_by_run: Dict[str, List[dict]]
     if not ok or not daily_market_by_run:
         return None
     fig, ax = plt.subplots(figsize=(10, 6))
-    merged_vols = _merge_daily_series(daily_market_by_run, "volume_weth_in", drop_last_day=True)
-    days = [r["day"] for r in merged_vols]
-    vols = [r["volume_weth_in"] for r in merged_vols]
-    ax.plot(days, vols, marker="s", label="all runs")
-    ax.set_title("Daily volume (WETH in) (all runs)")
+    merged_in = _merge_daily_series(daily_market_by_run, "volume_weth_in", drop_last_day=True)
+    merged_total = _merge_daily_series(daily_market_by_run, "volume_weth_total", drop_last_day=True)
+    days = [r["day"] for r in merged_in]
+    vols_in = [r["volume_weth_in"] for r in merged_in]
+    vols_total = [r["volume_weth_total"] for r in merged_total] if merged_total else vols_in
+    ax.plot(days, vols_in, marker="s", label="buy-side WETH in (weth_in)")
+    ax.plot(days, vols_total, marker=".", linestyle="--", label="gross WETH volume (weth_total)")
+    ax.set_title("Daily WETH volume (buy-side vs gross) (all runs)")
     ax.set_xlabel("Day (sim)")
-    ax.set_ylabel("Volume WETH in")
+    ax.set_ylabel("Volume (WETH)")
     ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend()
     out = outdir / "volume_weth_in.png"
     fig.tight_layout()
     fig.savefig(out, dpi=150)
@@ -566,15 +1461,15 @@ def _plot_rolling_vol_vs_volume(
         rolling.append(var**0.5)
     ax1.plot(days, rolling, label="vol")
 
-    merged_vols = _merge_daily_series(daily_market_by_run, "volume_weth_in", drop_last_day=True)
+    merged_vols = _merge_daily_series(daily_market_by_run, "volume_weth_total", drop_last_day=True)
     if merged_vols:
         vol_days = [r["day"] for r in merged_vols]
-        vol = [r["volume_weth_in"] for r in merged_vols]
-        ax2.plot(vol_days, vol, linestyle="--", label="volume")
+        vol = [r["volume_weth_total"] for r in merged_vols]
+        ax2.plot(vol_days, vol, linestyle="--", label="gross WETH volume")
     ax1.set_title(f"Rolling volatility (window={window}) vs daily volume (all runs)")
     ax1.set_xlabel("Day (sim)")
     ax1.set_ylabel("Rolling vol (std of returns)")
-    ax2.set_ylabel("Volume WETH in")
+    ax2.set_ylabel("Gross volume WETH (weth_total)")
     ax1.grid(True, linestyle="--", alpha=0.4)
     out = outdir / "rolling_vol_vs_volume.png"
     fig.tight_layout()
@@ -714,38 +1609,70 @@ def _plot_price_fair_spread(
     return out
 
 
-def _plot_price_fair_perceived(
+def _plot_price_fair_log(
     outdir: Path,
     daily_prices_by_run: Dict[str, List[dict]],
     fair_values_by_run: Dict[str, List[dict]],
-    perceived_by_run: Dict[str, List[dict]],
 ) -> Optional[Path]:
     ok, plt, plt_close = _get_matplotlib()
     if not ok:
         return None
     merged_prices = _merge_daily_series(daily_prices_by_run, "avg_normalized_price")
     merged_fairs = _merge_daily_series(fair_values_by_run, "fair_value")
-    merged_perceived = _merge_daily_series(perceived_by_run, "avg_perceived_log")
-    if not merged_prices or not merged_fairs or not merged_perceived:
+    if not merged_prices or not merged_fairs:
         return None
 
     fairs_map = {r["day"]: r["fair_value"] for r in merged_fairs}
-    perceived_map = {r["day"]: r["avg_perceived_log"] for r in merged_perceived}
-    days = [r["day"] for r in merged_prices if r["day"] in fairs_map and r["day"] in perceived_map]
-    prices_log = [math.log(max(r["avg_normalized_price"], 1e-12)) for r in merged_prices if r["day"] in fairs_map and r["day"] in perceived_map]
+    days = [r["day"] for r in merged_prices if r["day"] in fairs_map]
+    prices_log = [math.log(max(r["avg_normalized_price"], 1e-12)) for r in merged_prices if r["day"] in fairs_map]
     fairs_log = [math.log(max(fairs_map.get(d, 1e-12), 1e-12)) for d in days]
-    perceived_log = [perceived_map.get(d, None) for d in days]
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(days, fairs_log, label="fair value (log)")
-    ax.plot(days, perceived_log, label="avg perceived fair value (log)")
     ax.plot(days, prices_log, label="price (log)")
-    ax.set_title("Price vs fair value vs perceived fair value (log) (all runs)")
+    ax.set_title("Price vs fair value (log) (all runs)")
     ax.set_xlabel("Day (sim)")
     ax.set_ylabel("Log value")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
-    out = outdir / "price_fair_perceived.png"
+    out = outdir / "price_fair_log.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt_close(fig)
+    return out
+
+
+def _plot_regime_trace(outdir: Path, regime_by_run: Dict[str, List[dict]]) -> Optional[Path]:
+    ok, plt, plt_close = _get_matplotlib()
+    if not ok or not regime_by_run:
+        return None
+    merged_regime = _merge_daily_series(regime_by_run, "regime_code")
+    merged_sent = _merge_daily_series(regime_by_run, "sentiment")
+    if not merged_regime:
+        return None
+
+    days = [r["day"] for r in merged_regime]
+    codes = [r["regime_code"] for r in merged_regime]
+    sent_days = [r["day"] for r in merged_sent]
+    sentiments = [r["sentiment"] for r in merged_sent]
+
+    fig, ax1 = plt.subplots(figsize=(10, 4.8))
+    ax2 = ax1.twinx()
+
+    ax1.step(days, codes, where="post", color="#1f77b4", linewidth=2.0, label="regime")
+    ax1.set_yticks([0, 1, 2])
+    ax1.set_yticklabels(["bear", "bull", "hype"])
+    ax1.set_ylim(-0.2, 2.2)
+    ax1.set_xlabel("Day (sim)")
+    ax1.set_ylabel("Regime")
+    ax1.set_title("Regime trace (bear/bull/hype) + sentiment (all runs)")
+    ax1.grid(True, linestyle="--", alpha=0.4)
+
+    ax2.plot(sent_days, sentiments, color="#ff7043", linestyle="--", alpha=0.85, label="sentiment")
+    ax2.set_ylabel("Sentiment")
+    ax2.axhline(0.0, color="#777", linewidth=1.0, alpha=0.6)
+
+    out = outdir / "regime_trace.png"
     fig.tight_layout()
     fig.savefig(out, dpi=150)
     plt_close(fig)
@@ -861,33 +1788,46 @@ def _plot_liquidity_over_time(outdir: Path, liquidity_by_run: Dict[str, List[tup
     return out
 
 
-def _plot_repeat_buy_rates(outdir: Path, rates: Dict[str, dict]) -> Optional[Path]:
+def _plot_repeat_buy_rates(outdir: Path, cohort_data: Dict[str, CohortRunData]) -> Optional[Path]:
     ok, plt, plt_close = _get_matplotlib()
-    if not ok or not rates:
+    if not ok or not cohort_data:
         return None
-    eligible_success = 0.0
-    eligible_n = 0
-    control_success = 0.0
-    control_n = 0
-    for r in rates.values():
-        eligible_n += int(r.get("eligible_n", 0))
-        control_n += int(r.get("control_n", 0))
-        eligible_success += float(r.get("eligible_rate", 0.0)) * int(r.get("eligible_n", 0))
-        control_success += float(r.get("control_rate", 0.0)) * int(r.get("control_n", 0))
-    eligible = (eligible_success / eligible_n) if eligible_n else 0.0
-    control = (control_success / control_n) if control_n else 0.0
-    x = [0, 1]
+
+    groups = [k for k, _, _ in COHORT_GROUPS]
+    med_rates: List[float] = []
+    lo_err: List[float] = []
+    hi_err: List[float] = []
+    labels: List[str] = []
+    colors: List[str] = []
+    x = list(range(len(groups)))
+
+    for group_key, group_label, color in COHORT_GROUPS:
+        run_rates: List[float] = []
+        total_wallets = 0
+        for d in cohort_data.values():
+            wallets = d.wallets_by_group.get(group_key, [])
+            n = len(wallets)
+            total_wallets += n
+            if n <= 0:
+                continue
+            repeaters = sum(1 for w in wallets if int(d.total_buy_counts.get(w, 0)) >= 2)
+            run_rates.append(float(repeaters) / float(n))
+        med, lo, hi = _median_ci(run_rates)
+        med_rates.append(med)
+        lo_err.append(max(0.0, med - lo))
+        hi_err.append(max(0.0, hi - med))
+        labels.append(f"{group_label}\nN={total_wallets}")
+        colors.append(color)
+
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.bar([0], [eligible], width=0.6, label="eligible")
-    ax.bar([1], [control], width=0.6, label="control")
+    ax.bar(x, med_rates, width=0.6, color=colors, alpha=0.9)
+    ax.errorbar(x, med_rates, yerr=[lo_err, hi_err], fmt="none", ecolor="black", capsize=4)
     ax.set_xticks(x)
-    ax.set_xticklabels(["eligible", "control"])
-    ax.set_ylabel("Repeat-buy rate (buy_count >= 2)")
-    ax.set_title("Repeat-buy rate by cohort eligibility (all runs)")
+    ax.set_xticklabels(labels)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("Median repeat-buy rate across runs (buy_count >= 2)")
+    ax.set_title("Repeat-buy rate by static cohort (median across runs, 95% CI)")
     ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-    if control_n == 0:
-        ax.text(1, 0.02, "no control cohort in data", ha="center", fontsize=9)
-    ax.legend()
     out = outdir / "repeat_buy_rates.png"
     fig.tight_layout()
     fig.savefig(out, dpi=150)
@@ -948,8 +1888,84 @@ def _write_summary(outdir: Path, runs: Dict[str, RunMeta], summaries: Dict[str, 
         lines.append(f"  sides          : buys={s.get('buy_trades')} sells={s.get('sell_trades')}")
         lines.append(f"  onchain_events : swaps={s.get('swap_events')} mints={s.get('mint_events')}")
         lines.append(f"  anchor_price   : {s.get('anchor_price')} (anchor_day={s.get('anchor_day')})")
-        lines.append(f"  volumes        : token_in={s.get('total_volume_token_in')} weth_in={s.get('total_volume_weth_in')}")
+        lines.append(
+            "  volumes        : "
+            f"token_in={s.get('total_volume_token_in')} "
+            f"weth_in_buy_side={s.get('total_volume_weth_in')} "
+            f"weth_total_gross={s.get('total_volume_weth_total')}"
+        )
         lines.append(f"  coverage_days  : price_days={s.get('price_days')} market_days={s.get('market_days')}")
+        manifest = _load_manifest_for_run(run_id)
+        if manifest:
+            lines.append("  params:")
+            keys = [
+                "num_days",
+                "num_agents",
+                "max_agents",
+                "agent_start_eth",
+                "agent_start_weth",
+                "agent_start_token",
+                "max_buy_weth",
+                "max_sell_token",
+                "ticks_per_day",
+                "regime_bull_persist",
+                "regime_bear_persist",
+                "hype_initial_min_days",
+                "hype_initial_max_days",
+                "hype_initial_days_sampled",
+                "hype_persist_start",
+                "hype_persist_floor",
+                "hype_decay_tau",
+                "hype_exit_to_bull_prob",
+                "hype_reentry_prob",
+                "sentiment_alpha",
+                "sentiment_regime_level",
+                "sentiment_hype_mult",
+                "fair_mu",
+                "fair_beta",
+                "fair_sigma",
+                "fair_reversion",
+                "flow_intensity",
+                "flow_mispricing_scale",
+                "flow_regime_tilt",
+                "flow_noise_sigma",
+                "impact_kappa",
+                "entry_lambda_base",
+                "churn_prob_base",
+                "fixed_entry_sentiment_sensitivity",
+                "fixed_entry_saturation_power",
+                "fixed_churn_sentiment_sensitivity",
+                "fixed_churn_crowding_sensitivity",
+                "fixed_trade_base_participation",
+                "fixed_trade_signal_participation",
+                "fixed_trade_sentiment_participation",
+                "fixed_trade_regime_activity_bull",
+                "fixed_trade_regime_activity_hype",
+                "fixed_trade_regime_activity_bear",
+                "fixed_entry_regime_mult_hype",
+                "fixed_entry_regime_mult_bull",
+                "fixed_entry_regime_mult_bear",
+                "cohort_enabled",
+                "cohort_eligible_percent",
+                "nft_threshold_tokens",
+                "nft_threshold_basis",
+                "fixed_eligible_buy_weight_pre_threshold",
+                "fixed_eligible_buy_weight_post_threshold",
+                "fixed_eligible_sell_weight_pre_threshold",
+                "fixed_eligible_sell_weight_post_threshold",
+                "fixed_eligible_churn_mult_pre_threshold",
+                "fixed_eligible_churn_mult_post_threshold",
+                "circulating_supply_start",
+                "circulating_supply_daily_unlock",
+                "max_trade_pct_buy",
+                "max_trade_pct_sell",
+                "max_slippage",
+                "amm_fee_pct",
+                "fast_mode",
+            ]
+            for key in keys:
+                if key in manifest:
+                    lines.append(f"    {key} = {manifest.get(key)}")
         lines.append("")
     out = outdir / "summary.txt"
     out.write_text("\n".join(lines))
@@ -986,17 +2002,17 @@ def generate_report(warehouse: Path, outdir: Path, run_filter: Optional[List[str
         daily_returns = {rid: _load_daily_returns(conn, rid) for rid in run_ids}
         trade_sizes = _load_trade_sizes(conn)
         fair_values = {rid: _load_fair_values(conn, rid) for rid in run_ids}
-        perceived_values = {rid: _load_perceived_fair_values(conn, rid) for rid in run_ids}
+        regime_trace = {rid: _load_regime_trace(conn, rid) for rid in run_ids}
         balances = {rid: _load_wallet_balances(conn, rid) for rid in run_ids}
         ticks_prices = {rid: _load_swap_ticks_prices(conn, rid) for rid in run_ids}
         liquidity_series = {rid: _load_liquidity_series(conn, rid) for rid in run_ids}
-        repeat_buy_rates = _load_repeat_buy_rates(conn)
+        cohort_analytics = _load_cohort_analytics(conn, run_ids)
     finally:
         conn.close()
 
     print(f"Report output: {outdir}")
 
-    price_plot = _plot_price_paths(outdir, daily_prices)
+    price_plot = _plot_price_paths(outdir, daily_close_prices)
     if price_plot:
         print(f"  wrote {price_plot}")
     else:
@@ -1016,9 +2032,13 @@ def generate_report(warehouse: Path, outdir: Path, run_filter: Optional[List[str
     if spread_plot:
         print(f"  wrote {spread_plot}")
 
-    perceived_plot = _plot_price_fair_perceived(outdir, daily_close_prices, fair_values, perceived_values)
-    if perceived_plot:
-        print(f"  wrote {perceived_plot}")
+    fair_log_plot = _plot_price_fair_log(outdir, daily_close_prices, fair_values)
+    if fair_log_plot:
+        print(f"  wrote {fair_log_plot}")
+
+    regime_plot = _plot_regime_trace(outdir, regime_trace)
+    if regime_plot:
+        print(f"  wrote {regime_plot}")
 
     volume_swaps_plot = _plot_volume_and_swaps(outdir, daily_market)
     if volume_swaps_plot:
@@ -1052,9 +2072,41 @@ def generate_report(warehouse: Path, outdir: Path, run_filter: Optional[List[str
     if liq_plot:
         print(f"  wrote {liq_plot}")
 
-    repeat_buy_plot = _plot_repeat_buy_rates(outdir, repeat_buy_rates)
+    repeat_buy_plot = _plot_repeat_buy_rates(outdir, cohort_analytics)
     if repeat_buy_plot:
         print(f"  wrote {repeat_buy_plot}")
+
+    cohort_repeat_roll = _plot_repeat_buy_rate_rolling7(outdir, cohort_analytics, window=7)
+    if cohort_repeat_roll:
+        print(f"  wrote {cohort_repeat_roll}")
+
+    cohort_retention = _plot_retention_curve(outdir, cohort_analytics)
+    if cohort_retention:
+        print(f"  wrote {cohort_retention}")
+
+    cohort_intensity = _plot_buy_intensity_distributions(outdir, cohort_analytics)
+    if cohort_intensity:
+        print(f"  wrote {cohort_intensity}")
+
+    cohort_net_flow = _plot_net_flow_median_by_cohort(outdir, cohort_analytics)
+    if cohort_net_flow:
+        print(f"  wrote {cohort_net_flow}")
+
+    cohort_median_bar = _plot_median_holdings_bar(outdir, cohort_analytics)
+    if cohort_median_bar:
+        print(f"  wrote {cohort_median_bar}")
+
+    cohort_median_ts = _plot_median_holdings_timeseries(outdir, cohort_analytics)
+    if cohort_median_ts:
+        print(f"  wrote {cohort_median_ts}")
+
+    cohort_avg_prepost = _plot_avg_holdings_prepost_control(outdir, cohort_analytics)
+    if cohort_avg_prepost:
+        print(f"  wrote {cohort_avg_prepost}")
+
+    cohort_thresh_window = _plot_threshold_event_window(outdir, cohort_analytics, window=14)
+    if cohort_thresh_window:
+        print(f"  wrote {cohort_thresh_window}")
 
     outcomes_plot = _plot_trade_outcomes(outdir, summaries)
     if outcomes_plot:

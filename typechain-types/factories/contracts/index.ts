@@ -2,7 +2,7 @@
 /* tslint:disable */
 /* eslint-disable */
 export * as poolSwapExecutorSol from "./PoolSwapExecutor.sol";
-export * as swapCallbackSol from "./SwapCallback.sol";
 export * as interfaces from "./interfaces";
 export { JSTVIP__factory } from "./JSTVIP__factory";
 export { MyToken__factory } from "./MyToken__factory";
+export { WETH9__factory } from "./WETH9__factory";

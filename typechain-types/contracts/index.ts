@@ -3,9 +3,8 @@
 /* eslint-disable */
 import type * as poolSwapExecutorSol from "./PoolSwapExecutor.sol";
 export type { poolSwapExecutorSol };
-import type * as swapCallbackSol from "./SwapCallback.sol";
-export type { swapCallbackSol };
 import type * as interfaces from "./interfaces";
 export type { interfaces };
 export type { JSTVIP } from "./JSTVIP";
 export type { MyToken } from "./MyToken";
+export type { WETH9 } from "./WETH9";

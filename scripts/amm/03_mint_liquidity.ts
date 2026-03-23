@@ -21,20 +21,29 @@ async function main() {
 
   const [deployer] = await ethers.getSigners();
 
+  const isLocal = network === "local";
+  const positionManager = isLocal
+    ? process.env.LOCAL_UNISWAP_V3_POSITION_MANAGER
+    : UNISWAP_SEPOLIA.positionManager;
+  const wethAddr = isLocal ? process.env.LOCAL_WETH_ADDRESS : UNISWAP_SEPOLIA.weth;
+
+  if (!positionManager) {
+    throw new Error("Missing LOCAL_UNISWAP_V3_POSITION_MANAGER in .env");
+  }
+  if (!wethAddr) {
+    throw new Error("Missing LOCAL_WETH_ADDRESS in .env");
+  }
+
   const token = await ethers.getContractAt("MyToken", tokenAddress);
-  const weth  = await ethers.getContractAt(
-    "IWETH9Minimal",
-    UNISWAP_SEPOLIA.weth
-  );
+  const weth  = await ethers.getContractAt("IWETH9Minimal", wethAddr);
   const npm   = await ethers.getContractAt(
     "INonfungiblePositionManagerMinimal",
-    UNISWAP_SEPOLIA.positionManager
+    positionManager
   );
 
-  // For fork: fine. For real Sepolia: also ok with faucet constraints.
-  const wethToWrap   = ethers.parseEther("0.5");
-  // const tokenAmount  = ethers.parseUnits("200000", 18);
-  const tokenAmount = ethers.parseUnits("5000000", 18);
+  // Larger initial liquidity improves trade size distribution without loosening caps.
+  const wethToWrap   = ethers.parseEther("10.0");
+  const tokenAmount = ethers.parseUnits("10000000", 18);
 
   // Wrap ETH → WETH
   await (await weth.deposit({ value: wethToWrap })).wait();
@@ -45,12 +54,12 @@ async function main() {
 
   // Token ordering must match Uniswap V3 rules
   const token0 =
-    tokenAddress.toLowerCase() < UNISWAP_SEPOLIA.weth.toLowerCase()
+    tokenAddress.toLowerCase() < wethAddr.toLowerCase()
       ? tokenAddress
-      : UNISWAP_SEPOLIA.weth;
+      : wethAddr;
 
   const token1 =
-    token0 === tokenAddress ? UNISWAP_SEPOLIA.weth : tokenAddress;
+    token0 === tokenAddress ? wethAddr : tokenAddress;
 
   const amount0Desired =
     token0 === tokenAddress ? tokenAmount : wethToWrap;

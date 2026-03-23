@@ -1,0 +1,18 @@
+[dotenv@17.2.3] injecting env (0) from .env -- tip: 👥 sync secrets across teammates & machines: https://dotenvx.com/ops
+[dotenv@17.2.3] injecting env (0) from .env -- tip: 👥 sync secrets across teammates & machines: https://dotenvx.com/ops
+Reward controller starting (network=local)
+Signer: 0xD31Fdb4F80f1DA8F151457eB96B66cD6a5CF6cFc
+Token: 0x5FC8d32690cc91D4c39d9d3abcBD16989F875707
+NFT: 0x369215B6676E997F6Abb1bb835c933D3f69dB5d9
+Pool: 0x87F53B06bBF94b178dB91E79D94AA786294925ca
+Pool token0: 0x5fbdb2315678afecb367f032d93f642f64180aa3
+Pool token1: 0x5fc8d32690cc91d4c39d9d3abcbd16989f875707
+State file: .reward_state_local.json
+Legacy balance mint enabled: false
+Swap mint enabled: true
+Threshold (raw): 750000000000000000 (decimals=18)
+Mint failure cooldown (ms): 60000
+Throw on mint failure: false
+Index transfers: true
+SQLite indexer enabled: sim/controller_indexer.db
+Legacy balance-mint path disabled; indexing transfers only.

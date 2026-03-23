@@ -219,10 +219,10 @@ def main() -> None:
     print("Appending run to warehouse ...")
     _run([sys.executable, "-m", "sim.append_to_warehouse", "--run-db", str(db_path)])
 
-    # 10) generate cross-run report plots (use run_id to align folder naming)
+    # 10) generate report plots scoped to this run_id
     report_outdir = Path("sim/reports") / run_id
-    print(f"Generating cross-run report ... ({report_outdir})")
-    _run([sys.executable, "-m", "sim.report", "--outdir", str(report_outdir)])
+    print(f"Generating report for run_id={run_id} ... ({report_outdir})")
+    _run([sys.executable, "-m", "sim.report", "--outdir", str(report_outdir), "--runs", run_id])
 
     print("post_run complete.")
 

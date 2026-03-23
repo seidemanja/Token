@@ -20,12 +20,16 @@ Each simulation run outputs to:
 ## Core scripts and what they do
 
 ### 1) `sim/run_sim.py`
-Phase-0 simulation runner that:
+Simulation runner that:
 - creates N agent wallets
-- optionally adds new wallets each day
 - funds ETH, wraps to WETH, seeds TOKEN
 - deploys a payer-bound `PoolSwapExecutor` per agent
-- runs for `SIM_NUM_DAYS`, each day updating regime → sentiment → fair value and applying agent mispricing decisions
+- runs for `SIM_NUM_DAYS`, each day updating:
+  - regime (`R_t`) via a 3-state Markov chain (`hype`, `bull`, `bear`)
+    with forced initial hype days and rare later hype re-entry
+  - sentiment (`S_t`) as a regime-conditioned smoother
+  - fair value (`v_t`) with drift + sentiment tilt + noise
+  - net flow from mispricing (`v_t - p_t`)
 - writes:
   - SQLite `sim_runs`, `agents`, `trades`
   - JSONL `trades.jsonl`
@@ -35,45 +39,45 @@ Phase-0 simulation runner that:
 - optional CLI override: `--num-days` to run longer/shorter than `SIM_NUM_DAYS` for a single run
 - automatically starts the JS reward controller (unless `SIM_START_REWARD_CONTROLLER=false`)
 
-Also enforces *hard safety caps* on trade amounts:
+Model equations (core):
+- `S_t = (1-a)S_(t-1) + a*mu(R_t)`, where `mu(hype) > mu(bull) > mu(bear)`
+- `v_t = v_(t-1) + fair_mu + fair_beta*S_t + fair_sigma*eps_t`
+- `F_t = impact_kappa * (flow_intensity*tanh((v_t-p_t)/flow_mispricing_scale)*regime_factor(R_t) + flow_noise_sigma*z_t)`
+- `F_t` is converted to BUY/SELL orders and executed on-chain with existing slippage/cap guardrails
+
+Core dynamics parameters:
+- `SIM_REGIME_BULL_PERSIST`
+- `SIM_REGIME_BEAR_PERSIST`
+- `SIM_HYPE_INITIAL_MIN_DAYS`
+- `SIM_HYPE_INITIAL_MAX_DAYS`
+- `SIM_HYPE_PERSIST_START`
+- `SIM_HYPE_PERSIST_FLOOR`
+- `SIM_HYPE_DECAY_TAU`
+- `SIM_HYPE_EXIT_TO_BULL_PROB`
+- `SIM_HYPE_REENTRY_PROB`
+- `SIM_SENTIMENT_ALPHA`
+- `SIM_SENTIMENT_REGIME_LEVEL`
+- `SIM_SENTIMENT_HYPE_MULT`
+- `SIM_FAIR_MU`
+- `SIM_FAIR_BETA`
+- `SIM_FAIR_SIGMA`
+- `SIM_FAIR_REVERSION`
+- `SIM_FLOW_LAMBDA`
+- `SIM_FLOW_THETA`
+- `SIM_FLOW_RHO`
+- `SIM_FLOW_SIGMA`
+- `SIM_PRICE_KAPPA`
+
+Operational controls (not part of core dynamics) still apply:
 - `SIM_MAX_BUY_WETH`
 - `SIM_MAX_SELL_TOKEN`
-and logs both sampled and clamped amounts for auditing.
-
-Fair-value + sentiment diagnostics:
-- `SIM_FAIR_VALUE_START` (default 1.0)
-- `SIM_FAIR_VALUE_MU` (default 0.0)
-- `SIM_FAIR_VALUE_BETA` (default 0.10)
-- `SIM_FAIR_VALUE_SIGMA` (default 0.01)
-- `SIM_FAIR_VALUE_FLOOR` (default 0.01)
-
-Intraday ticks:
-- `SIM_TICKS_PER_DAY` (default 24)
-- `SIM_TRADES_PER_TICK_LAMBDA` (Poisson mean trades per tick)
-- `SIM_SENTIMENT_ALPHA` (default 0.10)
-- `SIM_SENTIMENT_MU_BEAR` / `SIM_SENTIMENT_MU_BULL`
-- `SIM_REGIME_P00` / `SIM_REGIME_P11`
-These are written to `fair_value_daily` and `run_factors_daily` (used for diagnostics + plotting).
-
-Perceived value + launch premium:
-- `SIM_PERCEIVED_BIAS_SIGMA`
-- `SIM_PERCEIVED_IDIO_RHO`
-- `SIM_PERCEIVED_IDIO_SIGMA`
-- `SIM_LAUNCH_PREMIUM_L0`
-- `SIM_LAUNCH_PREMIUM_TAU`
-Daily averages are written to `perceived_fair_value_daily`.
-
-Mispricing + trade size:
-- `SIM_MISPRICING_THETA`
-- `SIM_TRADE_Q0`
-- `SIM_TRADE_QMAX`
-- `SIM_SIZE_LOGN_MEAN`
-- `SIM_SIZE_LOGN_SIGMA`
-
-Circulating supply + liquidity policy:
+- `SIM_TICKS_PER_DAY`
+- `SIM_MAX_TRADE_PCT_BUY`
+- `SIM_MAX_TRADE_PCT_SELL`
+- `SIM_MAX_SLIPPAGE`
+- `SIM_AMM_FEE_PCT`
 - `SIM_CIRC_SUPPLY_START`
 - `SIM_CIRC_SUPPLY_DAILY_UNLOCK`
-- `SIM_LIQUIDITY_POLICY` (default `fixed`)
 
 Reward controller auto-start (optional):
 - `SIM_START_REWARD_CONTROLLER=true|false` (default true)
@@ -201,9 +205,6 @@ Dependency: `matplotlib` (install via `pip install matplotlib`).
 
 ### Automatic warehouse update
 `sim/post_run.py` now appends the run to `sim/warehouse.db` automatically after all analytics steps complete. You can still run `sim.append_to_warehouse` manually if needed.
-Wallet growth:
-- New wallet entry uses `SIM_ENTRY_LAMBDA0` with launch/sentiment/return sensitivity (`SIM_ENTRY_K_L`, `SIM_ENTRY_K_S`, `SIM_ENTRY_K_R`) and a capped return multiplier (`SIM_ENTRY_RETURN_MULT_MIN`, `SIM_ENTRY_RETURN_MULT_MAX`).
-- Churn uses `SIM_CHURN_PI0` with sentiment/return sensitivity (`SIM_CHURN_C_S`, `SIM_CHURN_C_R`).
 Carry forward wallets:
 - `SIM_CONTINUE_FROM_LATEST=true|false` (default false)
 - When true, `sim/run_sim.py` loads agents from the latest run DB and continues trading with those wallets (no re-funding or re-deploy).
