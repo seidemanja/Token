@@ -2,7 +2,8 @@
  * Reward Controller (AMM Swap–Driven)
  *
  * CURRENT STATE:
- * - Swap-driven eligibility + cumulative buy tracking (IMPLEMENTED)
+ * - Swap-driven eligibility + held-balance threshold minting (IMPLEMENTED)
+ * - Cumulative buy tracking retained for indexing/diagnostics
  * - ERC-20 Transfer + balanceOf eligibility (legacy, optional; DISABLED by default)
  *
  * Swap-driven rule:
@@ -11,8 +12,8 @@
  *     buy => pool sends token0 to recipient => amount0 < 0 => tokenBought = -amount0
  * - If tracked token is token1:
  *     buy => pool sends token1 to recipient => amount1 < 0 => tokenBought = -amount1
- * - Accumulate tokenBought per recipient (in base units, stored as decimal strings).
- * - Mint once when cumulativeBuys[recipient] >= threshold AND cohort gate passes.
+ * - Accumulate tokenBought per recipient (in base units, stored as decimal strings) for diagnostics.
+ * - Mint once when current balanceOf(recipient) >= threshold AND cohort gate passes.
  *
  * Operational hardening added:
  * - mintFailures + cooldown to avoid spamming retries when minting fails (e.g., out of gas/ETH).
@@ -459,7 +460,7 @@ async function main() {
     return a1 < 0n ? -a1 : 0n;
   }
 
-  async function maybeMintFromCumulativeBuys(buyer, blockNumber) {
+  async function maybeMintFromHeldBalance(buyer, blockNumber) {
     if (!swapMintEnabled) return;
 
     // Basic hygiene checks
@@ -494,12 +495,12 @@ async function main() {
       return;
     }
 
-    // Threshold check
-    const cum = parseBigintSafe(state.cumulativeBuys[buyerL] || "0");
-    if (cum < threshold) return;
+    // Threshold check (held-balance based)
+    const bal = await token.balanceOf(buyer);
+    if (bal < threshold) return;
 
     console.log(
-      `[SWAP ELIGIBLE] ${buyer} block=${blockNumber} cumulativeBuys=${cum.toString()}`
+      `[SWAP ELIGIBLE] ${buyer} block=${blockNumber} heldBalance=${bal.toString()}`
     );
 
     // Attempt mint; on failure, record timestamp for cooldown.
@@ -594,8 +595,8 @@ async function main() {
           const next = prev + tokenBought;
           state.cumulativeBuys[buyerL] = next.toString();
 
-          // Mint check (still safe due to hasMinted guard).
-          await maybeMintFromCumulativeBuys(buyer, log.blockNumber);
+          // Mint check (held-balance based; still safe due to hasMinted guard).
+          await maybeMintFromHeldBalance(buyer, log.blockNumber);
         }
 
         await dbRun(
