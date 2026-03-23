@@ -12,11 +12,10 @@ const config: HardhatUserConfig = {
   networks: {
     // In-process local network. Fork Sepolia when SEPOLIA_RPC_URL is set,
     // so your local runs use the same Uniswap v3 addresses as Sepolia.
-    hardhat: SEPOLIA_RPC_URL
-      ? {
-          forking: { url: SEPOLIA_RPC_URL },
-        }
+    hardhat: process.env.HARDHAT_FORK === "true" && SEPOLIA_RPC_URL
+      ? { forking: { url: SEPOLIA_RPC_URL } }
       : {},
+
 
     // Only used if you run `npx hardhat node`
     localhost: {

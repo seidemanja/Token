@@ -63,12 +63,34 @@ def _get_day0_block(conn: sqlite3.Connection) -> int:
     raise RuntimeError("run_stats.day0_block missing. Run extract_swaps first.")
 
 
-def _get_max_day(conn: sqlite3.Connection, run_id: str) -> int:
+def _get_wallet_day0_block(conn: sqlite3.Connection) -> Optional[int]:
+    """
+    Preferred day-0 snapshot block for holder diagnostics.
+    If absent (older runs), callers should fall back to day0_block.
+    """
     row = conn.execute(
-        "SELECT MAX(day) FROM trades WHERE run_id=?",
-        (run_id,),
+        "SELECT value FROM run_stats WHERE key='wallet_day0_block'"
     ).fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
+    if row and row[0]:
+        return int(row[0])
+    return None
+
+
+def _get_max_day(conn: sqlite3.Connection, run_id: str) -> int:
+    """
+    Use simulation-day tables first so inactive late days are still covered.
+    """
+    for table in ("run_factors_daily", "fair_value_daily", "trades"):
+        try:
+            row = conn.execute(
+                f"SELECT MAX(day) FROM {table} WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            continue
+        if row and row[0] is not None:
+            return int(row[0])
+    return 0
 
 
 def _get_run_end_block(conn: sqlite3.Connection, run_id: str) -> "Optional[int]":
@@ -96,7 +118,8 @@ def main() -> None:
     try:
         run_id = args.run_id or _get_latest_run_id(conn)
         _ensure_tables(conn)
-        day0_block = _get_day0_block(conn)
+        wallet_day0_block = _get_wallet_day0_block(conn)
+        day0_block = wallet_day0_block if wallet_day0_block is not None else _get_day0_block(conn)
         blocks_per_day = _get_blocks_per_day(conn)
         max_day = _get_max_day(conn, run_id)
         run_end_block = _get_run_end_block(conn, run_id)

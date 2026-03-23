@@ -155,6 +155,18 @@ def main() -> None:
         blocks_per_day = 100
     set_run_stat(conn, "blocks_per_day", str(blocks_per_day))
 
+    # Prefer exact simulation-day mapping via mined trade tx hashes.
+    mined_day_by_tx: dict[str, int] = {}
+    if conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'").fetchone():
+        for txh, day in conn.execute(
+            """
+            SELECT tx_hash, day
+            FROM trades
+            WHERE status='MINED' AND tx_hash IS NOT NULL
+            """
+        ).fetchall():
+            mined_day_by_tx[str(txh).lower()] = int(day)
+
     # --- Pass 1: compute price for all swaps and group prices by computed day ---
     all_rows: list[tuple[int, str, int, str, int, float, int]] = []
     prices_by_day: dict[int, list[float]] = {}
@@ -162,32 +174,52 @@ def main() -> None:
     for block_number, tx_hash, log_index, sqrt_price_x96_s, tick in swaps:
         b = int(block_number)
         p = float(price_weth_per_token_from_sqrt(cfg, int(sqrt_price_x96_s)))
-        day = (b - day0_block) // blocks_per_day
+        txh_norm = str(tx_hash).lower()
+        if txh_norm in mined_day_by_tx:
+            day = int(mined_day_by_tx[txh_norm])
+        else:
+            day = (b - day0_block) // blocks_per_day
 
         all_rows.append((b, tx_hash, int(log_index), str(int(sqrt_price_x96_s)), int(tick), p, int(day)))
 
         prices_by_day.setdefault(int(day), []).append(p)
 
-    # Choose the first day that actually has swaps
-    anchor_day = min(prices_by_day.keys())
-    anchor_prices = prices_by_day[anchor_day]
+    initial_price_s = get_run_stat(conn, "initial_price_weth_per_token")
+    if initial_price_s:
+        anchor_policy = "INITIAL_POOL_PRICE"
+        anchor_price = float(initial_price_s)
+        if anchor_price <= 0:
+            raise SystemExit(f"Initial anchor price computed as <= 0 ({anchor_price}). Check pool/token mapping.")
+        anchor_day = 0
+        anchor_prices = prices_by_day.get(anchor_day, [])
+        # Persist anchor metadata
+        set_run_stat(conn, "anchor_policy", anchor_policy)
+        set_run_stat(conn, "anchor_day", str(anchor_day))
+        set_run_stat(conn, "anchor_price_weth_per_token", str(anchor_price))
+        set_run_stat(conn, "anchor_day_swap_count", str(len(anchor_prices)))
+        set_run_stat(conn, "blocks_per_day", str(blocks_per_day))
+    else:
+        anchor_policy = "FIRST_NONEMPTY_DAY_MEDIAN"
+        # Choose the first day that actually has swaps
+        anchor_day = min(prices_by_day.keys())
+        anchor_prices = prices_by_day[anchor_day]
 
-    if not anchor_prices:
-        raise SystemExit(
-            "Anchor day selection failed: no prices found. "
-            "This should be impossible if swaps exist; please report."
-        )
+        if not anchor_prices:
+            raise SystemExit(
+                "Anchor day selection failed: no prices found. "
+                "This should be impossible if swaps exist; please report."
+            )
 
-    anchor_price = median(anchor_prices)
-    if anchor_price <= 0:
-        raise SystemExit(f"Anchor price computed as <= 0 ({anchor_price}). Check pool/token mapping.")
+        anchor_price = median(anchor_prices)
+        if anchor_price <= 0:
+            raise SystemExit(f"Anchor price computed as <= 0 ({anchor_price}). Check pool/token mapping.")
 
-    # Persist anchor metadata
-    set_run_stat(conn, "anchor_policy", "FIRST_NONEMPTY_DAY_MEDIAN")
-    set_run_stat(conn, "anchor_day", str(anchor_day))
-    set_run_stat(conn, "anchor_price_weth_per_token", str(anchor_price))
-    set_run_stat(conn, "anchor_day_swap_count", str(len(anchor_prices)))
-    set_run_stat(conn, "blocks_per_day", str(blocks_per_day))
+        # Persist anchor metadata
+        set_run_stat(conn, "anchor_policy", anchor_policy)
+        set_run_stat(conn, "anchor_day", str(anchor_day))
+        set_run_stat(conn, "anchor_price_weth_per_token", str(anchor_price))
+        set_run_stat(conn, "anchor_day_swap_count", str(len(anchor_prices)))
+        set_run_stat(conn, "blocks_per_day", str(blocks_per_day))
     conn.commit()
 
     # --- Pass 2: write swap_prices using the computed anchor ---
@@ -217,7 +249,7 @@ def main() -> None:
 
     print(f"Wrote {inserted} swap_prices rows.")
     print(
-        f"Anchor policy=FIRST_NONEMPTY_DAY_MEDIAN "
+        f"Anchor policy={anchor_policy} "
         f"anchor_day={anchor_day} anchor_price_weth_per_token={anchor_price} (swaps_on_anchor_day={len(anchor_prices)})."
     )
     print(f"Day bucketing uses day0_block={day0_block} (run_stats.day0_block).")

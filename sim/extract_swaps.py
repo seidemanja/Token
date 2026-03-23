@@ -70,6 +70,7 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
           swap_count INTEGER NOT NULL,
           volume_token_in REAL NOT NULL,
           volume_weth_in REAL NOT NULL,
+          volume_weth_total REAL NOT NULL DEFAULT 0.0,
           avg_tick REAL NOT NULL
         );
 
@@ -79,6 +80,9 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(daily_market)").fetchall()]
+    if "volume_weth_total" not in cols:
+        conn.execute("ALTER TABLE daily_market ADD COLUMN volume_weth_total REAL NOT NULL DEFAULT 0.0")
     conn.commit()
 
 
@@ -196,17 +200,34 @@ def main() -> None:
     set_run_stat(conn, "blocks_per_day", str(int(blocks_per_day)))
     print(f"Computing daily aggregates using blocks_per_day={blocks_per_day}...")
 
+    # Prefer exact simulation-day mapping via mined trade tx hashes.
+    # Fallback to block bucketing for any tx not present in trades.
+    mined_day_by_tx: dict[str, int] = {}
+    if conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'").fetchone():
+        for txh, day in conn.execute(
+            """
+            SELECT tx_hash, day
+            FROM trades
+            WHERE status='MINED' AND tx_hash IS NOT NULL
+            """
+        ).fetchall():
+            mined_day_by_tx[str(txh).lower()] = int(day)
+
     # IMPORTANT:
     # Rebuild from ALL swaps in DB so results are deterministic and we never keep stale day buckets.
     rows = conn.execute(
-        "SELECT block_number, amount0, amount1, tick FROM swaps ORDER BY block_number ASC"
+        "SELECT block_number, tx_hash, amount0, amount1, tick FROM swaps ORDER BY block_number ASC"
     ).fetchall()
 
     token_is_0 = cfg.token.lower() == cfg.pool_token0.lower()
 
     daily: dict[int, dict[str, float]] = {}
-    for block_number, amount0_s, amount1_s, tick in rows:
-        day = (int(block_number) - day0_block) // blocks_per_day
+    for block_number, tx_hash, amount0_s, amount1_s, tick in rows:
+        txh_norm = str(tx_hash).lower()
+        if txh_norm in mined_day_by_tx:
+            day = int(mined_day_by_tx[txh_norm])
+        else:
+            day = (int(block_number) - day0_block) // blocks_per_day
 
         amount0 = int(amount0_s)
         amount1 = int(amount1_s)
@@ -217,18 +238,22 @@ def main() -> None:
         if token_is_0:
             token_in = token0_in
             weth_in = token1_in
+            weth_total = abs(amount1)
         else:
             token_in = token1_in
             weth_in = token0_in
+            weth_total = abs(amount0)
 
         token_in_f = token_in / 1e18
         weth_in_f = weth_in / 1e18
+        weth_total_f = weth_total / 1e18
 
         if day not in daily:
             daily[day] = {
                 "swap_count": 0,
                 "volume_token_in": 0.0,
                 "volume_weth_in": 0.0,
+                "volume_weth_total": 0.0,
                 "tick_sum": 0,
                 "tick_n": 0,
             }
@@ -236,6 +261,7 @@ def main() -> None:
         daily[day]["swap_count"] += 1
         daily[day]["volume_token_in"] += token_in_f
         daily[day]["volume_weth_in"] += weth_in_f
+        daily[day]["volume_weth_total"] += weth_total_f
         daily[day]["tick_sum"] += int(tick)
         daily[day]["tick_n"] += 1
 
@@ -247,10 +273,17 @@ def main() -> None:
         avg_tick = d["tick_sum"] / max(d["tick_n"], 1)
         conn.execute(
             """
-            INSERT OR REPLACE INTO daily_market(day, swap_count, volume_token_in, volume_weth_in, avg_tick)
-            VALUES (?,?,?,?,?)
+            INSERT OR REPLACE INTO daily_market(day, swap_count, volume_token_in, volume_weth_in, volume_weth_total, avg_tick)
+            VALUES (?,?,?,?,?,?)
             """,
-            (int(day), int(d["swap_count"]), float(d["volume_token_in"]), float(d["volume_weth_in"]), float(avg_tick)),
+            (
+                int(day),
+                int(d["swap_count"]),
+                float(d["volume_token_in"]),
+                float(d["volume_weth_in"]),
+                float(d["volume_weth_total"]),
+                float(avg_tick),
+            ),
         )
 
     conn.commit()

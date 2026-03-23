@@ -55,8 +55,9 @@ def to_wei_amount(amount: float, decimals: int = 18) -> int:
 
 
 class Chain:
-    def __init__(self, rpc_url: str, token: str, pool: str, weth: str):
-        self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+    def __init__(self, rpc_url: str, token: str, pool: str, weth: str, *, fast_mode: bool = False):
+        # Forked or busy nodes can be slow; use a moderate timeout.
+        self.w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 20}))
         if not self.w3.is_connected():
             raise RuntimeError(f"Could not connect to RPC: {rpc_url}")
 
@@ -80,6 +81,14 @@ class Chain:
         # Admin is Hardhat account #0
         self.admin = Account.from_key(HARDHAT_DEFAULT_PRIVKEY0)
 
+        self.fast_mode = fast_mode
+        self.default_gas = 600000
+
+        # Per-signer nonce cache to avoid "nonce too low" with rapid sends.
+        self._nonce_cache: dict[str, int] = {}
+        # Allowance cache: (owner, token, spender) -> allowance
+        self._allowance_cache: dict[tuple[str, str, str], int] = {}
+
         # Load PoolSwapExecutor bytecode for deployment
         exec_artifact_path = executor_artifact_path()
         artifact = json.loads(Path(exec_artifact_path).read_text())
@@ -96,8 +105,14 @@ class Chain:
         - Do NOT set gasPrice, because eth-account will treat the tx as a typed transaction
         and reject unknown fields like gasPrice (your current error).
         """
-        # Nonce + chain ID
-        tx.setdefault("nonce", self.w3.eth.get_transaction_count(from_acct.address))
+        # Nonce + chain ID (always refresh from pending, override any prefilled nonce)
+        from_addr = from_acct.address
+        pending = self.w3.eth.get_transaction_count(from_addr, "pending")
+        cached = self._nonce_cache.get(from_addr)
+        if cached is None or cached < pending:
+            cached = pending
+        tx["nonce"] = cached
+        self._nonce_cache[from_addr] = cached + 1
         tx.setdefault("chainId", self.w3.eth.chain_id)
 
         # Fee fields (EIP-1559)
@@ -129,7 +144,10 @@ class Chain:
 
         # Gas estimation (do this after fee fields are present)
         if "gas" not in tx:
-            tx["gas"] = self.w3.eth.estimate_gas(tx)
+            if self.fast_mode:
+                tx["gas"] = self.default_gas
+            else:
+                tx["gas"] = self.w3.eth.estimate_gas(tx)
 
         # Sign and send
         signed = from_acct.sign_transaction(tx)
@@ -141,9 +159,16 @@ class Chain:
         return tx_hash.hex()
 
 
-    def wait_receipt(self, tx_hash: str, timeout_s: int = 60) -> Any:
-        """Wait for a transaction receipt."""
-        return self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout_s)
+    def wait_receipt(self, tx_hash: str, timeout_s: int = 20, retries: int = 2) -> Any:
+        """Wait for a transaction receipt with retry on timeout."""
+        last_err: Optional[Exception] = None
+        for _ in range(retries + 1):
+            try:
+                return self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout_s)
+            except Exception as e:
+                last_err = e
+        if last_err:
+            raise last_err
 
     # ----------------------------
     # Funding / seeding helpers
@@ -174,11 +199,48 @@ class Chain:
         tx = fn.build_transaction({"from": self.admin.address})
         return self._build_and_send(self.admin, tx)
 
+    def transfer_erc20_from_agent(self, agent: Agent, token_addr: str, to_addr: str, amount_wei: int) -> str:
+        """
+        Transfer ERC20 from an agent wallet to another address.
+        Useful for simple churn/exit handling without market impact.
+        """
+        acct = Account.from_key(agent.private_key)
+        token = self.w3.eth.contract(address=Web3.to_checksum_address(token_addr), abi=self.erc20_abi)
+        fn = token.functions.transfer(Web3.to_checksum_address(to_addr), int(amount_wei))
+        tx = fn.build_transaction({"from": acct.address})
+        return self._build_and_send(acct, tx)
+
     def approve_erc20(self, acct: Account, token_contract: Contract, spender: str, amount_wei: int) -> str:
         """Approve spender to pull ERC20 tokens from acct."""
         fn = token_contract.functions.approve(Web3.to_checksum_address(spender), amount_wei)
         tx = fn.build_transaction({"from": acct.address})
         return self._build_and_send(acct, tx)
+
+    def ensure_approval(self, acct: Account, token_contract: Contract, spender: str, amount_wei: int) -> None:
+        """Ensure allowance is at least amount_wei; wait for approval receipt if needed."""
+        owner = Web3.to_checksum_address(acct.address)
+        spender_addr = Web3.to_checksum_address(spender)
+        token_addr = Web3.to_checksum_address(token_contract.address)
+        # Always use ERC20 ABI for allowance checks (WETH may not expose allowance in its minimal ABI).
+        erc20 = self.w3.eth.contract(address=token_addr, abi=self.erc20_abi)
+        key = (owner, token_addr, spender_addr)
+        current = self._allowance_cache.get(key)
+        if current is None:
+            current = erc20.functions.allowance(owner, spender_addr).call()
+            current = int(current)
+            self._allowance_cache[key] = current
+        if int(current) >= int(amount_wei):
+            return
+        txh = self.approve_erc20(acct, token_contract, spender, amount_wei)
+        self.wait_receipt(txh)
+        # Update cache after approval
+        self._allowance_cache[key] = int(amount_wei)
+
+    def preapprove_agent(self, agent: Agent, executor_addr: str) -> None:
+        """Pre-approve large allowances to avoid per-trade approvals in fast mode."""
+        acct = Account.from_key(agent.private_key)
+        self.ensure_approval(acct, self.weth, executor_addr, to_wei_amount(10_000, 18))
+        self.ensure_approval(acct, self.token, executor_addr, to_wei_amount(10_000_000, 18))
 
     # ----------------------------
     # Executor deployment
@@ -268,14 +330,14 @@ class Chain:
         zero_for_one = self.compute_zero_for_one(token_in_addr, pool_token0, pool_token1)
         sqrt_limit = self.sqrt_price_limit_for_direction(zero_for_one)
 
-        # Approve token_in to the executor.
-        # We approve a large allowance to avoid re-approving every trade.
-        if token_in_addr.lower() == self.weth_addr.lower():
-            self.approve_erc20(acct, self.weth, executor_addr, to_wei_amount(10_000, 18))
-        elif token_in_addr.lower() == self.token_addr.lower():
-            self.approve_erc20(acct, self.token, executor_addr, to_wei_amount(10_000_000, 18))
-        else:
-            raise ValueError("token_in_addr is not WETH or TOKEN (unexpected for this project).")
+        # Approve token_in to the executor (per-trade, but only when needed).
+        if not self.fast_mode:
+            if token_in_addr.lower() == self.weth_addr.lower():
+                self.ensure_approval(acct, self.weth, executor_addr, to_wei_amount(10_000, 18))
+            elif token_in_addr.lower() == self.token_addr.lower():
+                self.ensure_approval(acct, self.token, executor_addr, to_wei_amount(10_000_000, 18))
+            else:
+                raise ValueError("token_in_addr is not WETH or TOKEN (unexpected for this project).")
 
         # Build + send the swap tx
         fn = executor.functions.executeSwap(
@@ -283,6 +345,6 @@ class Chain:
             int(amount_in_wei),   # int256
             int(sqrt_limit)       # uint160
         )
-        tx = fn.build_transaction({"from": acct.address})
+        tx = fn.build_transaction({"from": acct.address, "gas": 250000})
         tx_hash = self._build_and_send(acct, tx)
         return tx_hash

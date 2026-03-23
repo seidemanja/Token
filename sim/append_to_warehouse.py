@@ -40,6 +40,11 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return bool(row)
 
 
+def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
+    return any(str(r[1]) == column for r in rows)
+
+
 def _ensure_warehouse_schema(conn: sqlite3.Connection) -> None:
     """
     Create cross-run tables. These are run_id-keyed so runs can be appended
@@ -151,6 +156,7 @@ def _ensure_warehouse_schema(conn: sqlite3.Connection) -> None:
           sentiment REAL NOT NULL,
           fair_value REAL NOT NULL,
           launch_mult REAL NOT NULL,
+          regime_code INTEGER,
           price_norm REAL,
           PRIMARY KEY (run_id, day)
         );
@@ -246,6 +252,7 @@ def _ensure_warehouse_schema(conn: sqlite3.Connection) -> None:
           swap_count INTEGER NOT NULL,
           volume_token_in REAL NOT NULL,
           volume_weth_in REAL NOT NULL,
+          volume_weth_total REAL NOT NULL DEFAULT 0.0,
           avg_tick REAL NOT NULL,
           PRIMARY KEY (run_id, day)
         );
@@ -281,6 +288,7 @@ def _ensure_warehouse_schema(conn: sqlite3.Connection) -> None:
           anchor_day INTEGER,
           total_volume_token_in REAL,
           total_volume_weth_in REAL,
+          total_volume_weth_total REAL,
           price_days INTEGER,
           market_days INTEGER
         );
@@ -289,6 +297,15 @@ def _ensure_warehouse_schema(conn: sqlite3.Connection) -> None:
     cols_agents = [r[1] for r in conn.execute("PRAGMA table_info(run_agents);").fetchall()]
     if "agent_type" not in cols_agents:
         conn.execute("ALTER TABLE run_agents ADD COLUMN agent_type TEXT DEFAULT 'retail';")
+    cols_daily_market = [r[1] for r in conn.execute("PRAGMA table_info(run_daily_market);").fetchall()]
+    if "volume_weth_total" not in cols_daily_market:
+        conn.execute("ALTER TABLE run_daily_market ADD COLUMN volume_weth_total REAL NOT NULL DEFAULT 0.0;")
+    cols_summary = [r[1] for r in conn.execute("PRAGMA table_info(run_summary);").fetchall()]
+    if "total_volume_weth_total" not in cols_summary:
+        conn.execute("ALTER TABLE run_summary ADD COLUMN total_volume_weth_total REAL;")
+    cols_run_factors = [r[1] for r in conn.execute("PRAGMA table_info(run_factors_daily);").fetchall()]
+    if "regime_code" not in cols_run_factors:
+        conn.execute("ALTER TABLE run_factors_daily ADD COLUMN regime_code INTEGER;")
     conn.commit()
 
 
@@ -328,15 +345,20 @@ def _load_run_metadata(conn: sqlite3.Connection) -> dict:
 def _load_daily_rows(conn: sqlite3.Connection, table: str) -> list[tuple]:
     if not _table_exists(conn, table):
         return []
-    cols = {
+    cols_map = {
         "daily_prices": (
             "day, swap_count, avg_price_weth_per_token, avg_normalized_price, "
             "open_price_weth_per_token, high_price_weth_per_token, low_price_weth_per_token, close_price_weth_per_token, "
             "open_normalized_price, high_normalized_price, low_normalized_price, close_normalized_price, "
             "volume_weth_in, trades_count, fair_value_close"
         ),
-        "daily_market": "day, swap_count, volume_token_in, volume_weth_in, avg_tick",
-    }.get(table)
+    }
+    cols = cols_map.get(table)
+    if table == "daily_market":
+        if _table_has_column(conn, "daily_market", "volume_weth_total"):
+            cols = "day, swap_count, volume_token_in, volume_weth_in, volume_weth_total, avg_tick"
+        else:
+            cols = "day, swap_count, volume_token_in, volume_weth_in, avg_tick"
     if cols is None:
         return []
     return conn.execute(f"SELECT {cols} FROM {table} ORDER BY day ASC").fetchall()
@@ -350,11 +372,12 @@ def _compute_summary(conn: sqlite3.Connection) -> dict:
         "num_agents": count("SELECT COUNT(*) FROM agents"),
         "num_run_wallets": 0,
         "num_wallet_cohorts": 0,
-        "trade_count": count("SELECT COUNT(*) FROM trades"),
+        # Count terminal outcomes only; SENT rows are transitional bookkeeping.
+        "trade_count": count("SELECT COUNT(*) FROM trades WHERE status IN ('MINED','REVERT')"),
         "mined_trades": count("SELECT COUNT(*) FROM trades WHERE status='MINED'"),
         "reverted_trades": count("SELECT COUNT(*) FROM trades WHERE status='REVERT'"),
-        "buy_trades": count("SELECT COUNT(*) FROM trades WHERE side='BUY'"),
-        "sell_trades": count("SELECT COUNT(*) FROM trades WHERE side='SELL'"),
+        "buy_trades": count("SELECT COUNT(*) FROM trades WHERE status IN ('MINED','REVERT') AND side='BUY'"),
+        "sell_trades": count("SELECT COUNT(*) FROM trades WHERE status IN ('MINED','REVERT') AND side='SELL'"),
         "swap_events": 0,
         "mint_events": 0,
         "latest_trade_day": _fetch_scalar(conn, "SELECT MAX(day) FROM trades", default=None),
@@ -362,6 +385,7 @@ def _compute_summary(conn: sqlite3.Connection) -> dict:
         "anchor_day": None,
         "total_volume_token_in": 0.0,
         "total_volume_weth_in": 0.0,
+        "total_volume_weth_total": 0.0,
         "price_days": 0,
         "market_days": 0,
     }
@@ -382,16 +406,32 @@ def _compute_summary(conn: sqlite3.Connection) -> dict:
         summary["anchor_day"] = int(anchor_day) if anchor_day is not None else None
 
     if _table_exists(conn, "daily_market"):
-        vols = conn.execute(
-            "SELECT COALESCE(SUM(volume_token_in),0.0), COALESCE(SUM(volume_weth_in),0.0), COUNT(*) FROM daily_market"
-        ).fetchone()
+        has_total = _table_has_column(conn, "daily_market", "volume_weth_total")
+        if has_total:
+            vols = conn.execute(
+                "SELECT COALESCE(SUM(volume_token_in),0.0), COALESCE(SUM(volume_weth_in),0.0), COALESCE(SUM(volume_weth_total),0.0), COUNT(*) FROM daily_market"
+            ).fetchone()
+        else:
+            vols = conn.execute(
+                "SELECT COALESCE(SUM(volume_token_in),0.0), COALESCE(SUM(volume_weth_in),0.0), COUNT(*) FROM daily_market"
+            ).fetchone()
         if vols:
             summary["total_volume_token_in"] = float(vols[0])
             summary["total_volume_weth_in"] = float(vols[1])
-            summary["market_days"] = int(vols[2])
+            if has_total:
+                summary["total_volume_weth_total"] = float(vols[2])
+                summary["market_days"] = int(vols[3])
+            else:
+                summary["total_volume_weth_total"] = float(vols[1])
+                summary["market_days"] = int(vols[2])
 
     if _table_exists(conn, "daily_prices"):
         summary["price_days"] = count("SELECT COUNT(*) FROM daily_prices")
+    if _table_exists(conn, "fair_value_daily"):
+        sim_days = count("SELECT COUNT(*) FROM fair_value_daily")
+        if sim_days > 0:
+            summary["price_days"] = max(int(summary["price_days"]), int(sim_days))
+            summary["market_days"] = max(int(summary["market_days"]), int(sim_days))
 
     return summary
 
@@ -533,9 +573,14 @@ def append_to_warehouse(run_db: Path, warehouse_db: Path) -> None:
 
         run_factors = []
         if _table_exists(run_conn, "run_factors_daily"):
-            run_factors = run_conn.execute(
-                "SELECT day, sentiment, fair_value, launch_mult, price_norm FROM run_factors_daily ORDER BY day ASC"
-            ).fetchall()
+            if _table_has_column(run_conn, "run_factors_daily", "regime_code"):
+                run_factors = run_conn.execute(
+                    "SELECT day, sentiment, fair_value, launch_mult, regime_code, price_norm FROM run_factors_daily ORDER BY day ASC"
+                ).fetchall()
+            else:
+                run_factors = run_conn.execute(
+                    "SELECT day, sentiment, fair_value, launch_mult, price_norm FROM run_factors_daily ORDER BY day ASC"
+                ).fetchall()
 
         trade_caps = []
         if _table_exists(run_conn, "trade_cap_daily"):
@@ -654,19 +699,20 @@ def append_to_warehouse(run_db: Path, warehouse_db: Path) -> None:
         if daily_market:
             warehouse_conn.executemany(
                 """
-                INSERT OR REPLACE INTO run_daily_market(run_id, day, swap_count, volume_token_in, volume_weth_in, avg_tick)
-                VALUES (?,?,?,?,?,?)
+                INSERT OR REPLACE INTO run_daily_market(run_id, day, swap_count, volume_token_in, volume_weth_in, volume_weth_total, avg_tick)
+                VALUES (?,?,?,?,?,?,?)
                 """,
                 [
                     (
                         meta["run_id"],
-                        int(day),
-                        int(cnt),
-                        float(vt),
-                        float(vw),
-                        float(avg_tick),
+                        int(row[0]),
+                        int(row[1]),
+                        float(row[2]),
+                        float(row[3]),
+                        float(row[4] if len(row) == 6 else row[3]),
+                        float(row[5] if len(row) == 6 else row[4]),
                     )
-                    for day, cnt, vt, vw, avg_tick in daily_market
+                    for row in daily_market
                 ],
             )
 
@@ -820,8 +866,8 @@ def append_to_warehouse(run_db: Path, warehouse_db: Path) -> None:
         if run_factors:
             warehouse_conn.executemany(
                 """
-                INSERT OR REPLACE INTO run_factors_daily(run_id, day, sentiment, fair_value, launch_mult, price_norm)
-                VALUES (?,?,?,?,?,?)
+                INSERT OR REPLACE INTO run_factors_daily(run_id, day, sentiment, fair_value, launch_mult, regime_code, price_norm)
+                VALUES (?,?,?,?,?,?,?)
                 """,
                 [
                     (
@@ -830,9 +876,11 @@ def append_to_warehouse(run_db: Path, warehouse_db: Path) -> None:
                         float(sent),
                         float(fv),
                         float(lm),
+                        (int(rc) if rc is not None else None),
                         (float(pn) if pn is not None else None),
                     )
-                    for day, sent, fv, lm, pn in run_factors
+                    for row in run_factors
+                    for day, sent, fv, lm, rc, pn in [row if len(row) == 6 else (*row[:4], None, row[4])]
                 ],
             )
 
@@ -978,10 +1026,11 @@ def append_to_warehouse(run_db: Path, warehouse_db: Path) -> None:
               anchor_day,
               total_volume_token_in,
               total_volume_weth_in,
+              total_volume_weth_total,
               price_days,
               market_days
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 meta["run_id"],
@@ -1007,6 +1056,7 @@ def append_to_warehouse(run_db: Path, warehouse_db: Path) -> None:
                 summary["anchor_day"],
                 summary["total_volume_token_in"],
                 summary["total_volume_weth_in"],
+                summary["total_volume_weth_total"],
                 summary["price_days"],
                 summary["market_days"],
             ),

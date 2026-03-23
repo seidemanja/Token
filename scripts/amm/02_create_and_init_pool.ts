@@ -42,15 +42,18 @@ async function main() {
   console.log("process.env.LOCAL_TOKEN_ADDRESS:", process.env.LOCAL_TOKEN_ADDRESS);
   console.log("process.env.SEPOLIA_TOKEN_ADDRESS:", process.env.SEPOLIA_TOKEN_ADDRESS);
 
-  // NOTE:
-  // For now, you are intentionally using UNISWAP_SEPOLIA config
-  // even on localhost (forked or simulated). This is fine and intentional.
-  const factory = await ethers.getContractAt(
-    "IUniswapV3FactoryMinimal",
-    UNISWAP_SEPOLIA.factory
-  );
+  const isLocal = network === "local";
+  const factoryAddr = isLocal ? process.env.LOCAL_UNISWAP_V3_FACTORY : UNISWAP_SEPOLIA.factory;
+  const weth = isLocal ? process.env.LOCAL_WETH_ADDRESS : UNISWAP_SEPOLIA.weth;
 
-  const weth = UNISWAP_SEPOLIA.weth;
+  if (!factoryAddr) {
+    throw new Error("Missing LOCAL_UNISWAP_V3_FACTORY in .env");
+  }
+  if (!weth) {
+    throw new Error("Missing LOCAL_WETH_ADDRESS in .env");
+  }
+
+  const factory = await ethers.getContractAt("IUniswapV3FactoryMinimal", factoryAddr);
 
   let poolAddress = await factory.getPool(tokenAddress, weth, FEE);
 
