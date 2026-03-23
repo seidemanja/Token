@@ -49,6 +49,8 @@ def _maybe_start_reward_controller(run_dir: Path) -> dict:
         "enabled": bool(enabled),
         "started": False,
         "pid": None,
+        "state_file": None,
+        "sqlite_path": None,
         "note": "",
     }
     status_path = run_dir / "reward_controller.status.json"
@@ -70,16 +72,26 @@ def _maybe_start_reward_controller(run_dir: Path) -> dict:
                 continue
 
     log_path = run_dir / "reward_controller.log"
+    # Use run-scoped controller files so each simulation starts from a clean cursor.
+    # This avoids stale global state (old block pointers) suppressing mint activity.
+    run_state_path = (run_dir / "reward_state_local.json").resolve()
+    run_sqlite_path = (run_dir / "controller_indexer.db").resolve()
+    controller_env = os.environ.copy()
+    controller_env["LOCAL_STATE_FILE"] = str(run_state_path)
+    controller_env["CONTROLLER_SQLITE_PATH"] = str(run_sqlite_path)
     try:
         proc = subprocess.Popen(
             ["node", "scripts/controller/reward_controller_amm_swaps.js"],
+            env=controller_env,
             stdout=log_path.open("a"),
             stderr=subprocess.STDOUT,
         )
         (run_dir / "reward_controller.pid").write_text(str(proc.pid) + "\n")
         status["started"] = True
         status["pid"] = proc.pid
-        status["note"] = f"log={log_path}"
+        status["state_file"] = str(run_state_path)
+        status["sqlite_path"] = str(run_sqlite_path)
+        status["note"] = f"log={log_path}; state={run_state_path}; sqlite={run_sqlite_path}"
     except Exception as exc:
         status["note"] = f"failed_to_start: {exc}"
 
