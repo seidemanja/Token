@@ -11,10 +11,8 @@ async function main() {
   const rpcUrl = process.env.LOCAL_RPC_URL || "http://127.0.0.1:8545";
   const provider = new ethers.JsonRpcProvider(rpcUrl);
 
-  // Hardhat local dev account #0 private key (known default)
-  const hardhatPk =
-    "0xREDACTED_64_HEX";
-  const funder = new ethers.Wallet(hardhatPk, provider);
+  // Hardhat exposes local accounts as unlocked JSON-RPC signers.
+  const funder = await provider.getSigner(0);
 
   // This is the signer your controller uses (derived from PRIVATE_KEY).
   // You can also set CONTROLLER_SIGNER_ADDRESS in .env if you want,
@@ -30,7 +28,7 @@ async function main() {
 
   const amountEth = process.env.FUND_CONTROLLER_ETH || "10";
 
-  console.log("Funder:", funder.address);
+  console.log("Funder:", await funder.getAddress());
   console.log("Funding controller signer:", to);
   console.log("Amount (ETH):", amountEth);
 

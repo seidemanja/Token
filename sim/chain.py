@@ -14,6 +14,7 @@ Important:
 """
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -30,10 +31,6 @@ from sim.abi import (
     weth_artifact_path,
     executor_artifact_path,
 )
-
-# Hardhat default private key #0 (LOCAL ONLY).
-# This key exists only for local dev networks and must never be used on public networks.
-HARDHAT_DEFAULT_PRIVKEY0 = "0xREDACTED_64_HEX"
 
 # Uniswap V3 sqrt price bounds (from TickMath)
 MIN_SQRT_RATIO = 4295128739
@@ -78,8 +75,17 @@ class Chain:
         self.pool: Contract = self.w3.eth.contract(address=self.pool_addr, abi=self.pool_abi)
         self.weth: Contract = self.w3.eth.contract(address=self.weth_addr, abi=self.weth_abi)
 
-        # Admin is Hardhat account #0
-        self.admin = Account.from_key(HARDHAT_DEFAULT_PRIVKEY0)
+        admin_key = os.getenv("SIM_ADMIN_PRIVATE_KEY") or os.getenv("HARDHAT_ADMIN_PRIVATE_KEY")
+        self.admin: Optional[Account] = Account.from_key(admin_key) if admin_key else None
+        if self.admin is None:
+            accounts = self.w3.eth.accounts
+            if not accounts:
+                raise RuntimeError(
+                    "No unlocked RPC accounts found. Set SIM_ADMIN_PRIVATE_KEY for admin funding."
+                )
+            self.admin_address = Web3.to_checksum_address(accounts[0])
+        else:
+            self.admin_address = self.admin.address
 
         self.fast_mode = fast_mode
         self.default_gas = 600000
@@ -158,6 +164,19 @@ class Chain:
 
         return tx_hash.hex()
 
+    def _send_admin(self, tx: dict[str, Any]) -> str:
+        """Send admin transactions via env private key or unlocked local RPC account."""
+        tx["from"] = self.admin_address
+        if self.admin is not None:
+            return self._build_and_send(self.admin, tx)
+        if "gas" not in tx:
+            if self.fast_mode:
+                tx["gas"] = self.default_gas
+            else:
+                tx["gas"] = self.w3.eth.estimate_gas(tx)
+        tx_hash = self.w3.eth.send_transaction(tx)
+        return tx_hash.hex()
+
 
     def wait_receipt(self, tx_hash: str, timeout_s: int = 20, retries: int = 2) -> Any:
         """Wait for a transaction receipt with retry on timeout."""
@@ -177,11 +196,11 @@ class Chain:
     def fund_eth(self, to_addr: str, eth_amount: float) -> str:
         """Send ETH from admin to an agent."""
         tx = {
-            "from": self.admin.address,
+            "from": self.admin_address,
             "to": Web3.to_checksum_address(to_addr),
             "value": self.w3.to_wei(eth_amount, "ether"),
         }
-        return self._build_and_send(self.admin, tx)
+        return self._send_admin(tx)
 
     def wrap_eth_to_weth(self, acct: Account, eth_amount: float) -> str:
         """Wrap ETH into WETH by calling WETH.deposit()."""
@@ -196,8 +215,8 @@ class Chain:
         """Transfer simulation TOKEN from admin to an agent so agents can SELL."""
         amt = to_wei_amount(token_amount, 18)
         fn = self.token.functions.transfer(Web3.to_checksum_address(to_addr), amt)
-        tx = fn.build_transaction({"from": self.admin.address})
-        return self._build_and_send(self.admin, tx)
+        tx = fn.build_transaction({"from": self.admin_address})
+        return self._send_admin(tx)
 
     def transfer_erc20_from_agent(self, agent: Agent, token_addr: str, to_addr: str, amount_wei: int) -> str:
         """

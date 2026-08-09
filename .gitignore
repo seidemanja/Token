@@ -19,6 +19,9 @@
 
 # Typechain output
 /types
+typechain-types/
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
 
 # Hardhat coverage reports
 /coverage
