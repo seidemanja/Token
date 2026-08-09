@@ -5,6 +5,8 @@
 /dist
 
 /.DS_Store
+.DS_Store
+**/.DS_Store
 
 # pnpm deploy output
 /bundle
@@ -22,3 +24,26 @@
 /coverage
 
 .env
+.env.*
+
+# Python/runtime caches
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Simulation outputs and local databases
+sim/out/
+sim/reports/
+sim/*.db
+sim/*.db-shm
+sim/*.db-wal
+
+# Reward controller runtime state
+.reward_state_local.json
+.reward_state_sepolia.json
+reward_controller.log
+reward_controller.pid
+reward_controller.status.json
+**/reward_controller.log
+**/reward_controller.pid
+**/reward_controller.status.json
