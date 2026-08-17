@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
+  "engines": {
+    "node": ">=20 <23",
+    "npm": ">=10"
+  },
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",

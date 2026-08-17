@@ -62,6 +62,10 @@ For stable design decisions and future-agent guardrails, see `PROJECT_SPEC.md`.
 
 ## Quick Start
 
+Use Node 20 for local development. The repo includes `.nvmrc` and CI uses the same version:
+
+    nvm use
+
 Install dependencies and run the Solidity test suite:
 
     npm ci
