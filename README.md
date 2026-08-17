@@ -106,9 +106,19 @@ Verify the end-to-end pipeline with a small smoke simulation:
 
 The low threshold in this smoke command is intentional: it forces the reward controller path to mint NFTs during a short run. For normal simulations, use the threshold in `.env`.
 
-Run a simulation:
+Run a normal simulation with the defaults from `.env` and `sim/config.py`:
 
     python -m sim.run_sim --num-days 45
+
+For a larger employer/demo-style run similar to the tuned 45-day outputs, source the committed safe preset after your local `.env` values are loaded:
+
+    set -a
+    source .env
+    source sim/presets/employer_45d.env
+    set +a
+    python -m sim.run_sim --num-days 45
+
+The preset contains only simulation knobs such as population scale, regime probabilities, market-noise settings, and the NFT threshold. It does not contain private keys, addresses, RPC credentials, or deployment-specific values.
 
 `sim/run_sim.py` writes a run database under `sim/out/<run_id>/`, runs post-processing, appends to `sim/warehouse.db`, and generates plots under `sim/reports/<timestamp>/`.
 
