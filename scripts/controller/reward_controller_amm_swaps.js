@@ -49,6 +49,7 @@ const {
   POOL_TOKEN0,
   POOL_TOKEN1,
   STATE_FILE,
+  requireValue,
 } = require("../env");
 
 /* ------------------------- helpers ------------------------- */
@@ -233,6 +234,12 @@ function isInEligibleCohort(address, enabled, pct, salt) {
 async function main() {
   console.log(`Reward controller starting (network=${network})`);
 
+  const tokenAddress = requireValue(TOKEN_ADDRESS, "TOKEN_ADDRESS");
+  const nftAddress = requireValue(JSTVIP_ADDRESS, "JSTVIP_ADDRESS");
+  const poolAddress = requireValue(POOL_ADDRESS, "POOL_ADDRESS");
+  const poolToken0 = requireValue(POOL_TOKEN0, "POOL_TOKEN0");
+  const poolToken1 = requireValue(POOL_TOKEN1, "POOL_TOKEN1");
+
   const privateKey = process.env.PRIVATE_KEY;
   if (!privateKey) throw new Error("Missing PRIVATE_KEY");
 
@@ -267,42 +274,42 @@ async function main() {
   const httpProvider = new ethers.JsonRpcProvider(RPC_URL);
   const signer = new ethers.Wallet(pk, httpProvider);
 
-  const token = new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, httpProvider);
-  const nft = new ethers.Contract(JSTVIP_ADDRESS, NFT_ABI, signer);
-  const pool = new ethers.Contract(POOL_ADDRESS, UNISWAP_V3_POOL_ABI, httpProvider);
+  const token = new ethers.Contract(tokenAddress, ERC20_ABI, httpProvider);
+  const nft = new ethers.Contract(nftAddress, NFT_ABI, signer);
+  const pool = new ethers.Contract(poolAddress, UNISWAP_V3_POOL_ABI, httpProvider);
 
   // --- pool sanity check ---
   const onchainToken0 = (await pool.token0()).toLowerCase();
   const onchainToken1 = (await pool.token1()).toLowerCase();
 
   if (
-    onchainToken0 !== POOL_TOKEN0.toLowerCase() ||
-    onchainToken1 !== POOL_TOKEN1.toLowerCase()
+    onchainToken0 !== poolToken0.toLowerCase() ||
+    onchainToken1 !== poolToken1.toLowerCase()
   ) {
     throw new Error(
       `Pool token mismatch.
-       env=(${POOL_TOKEN0}, ${POOL_TOKEN1})
+       env=(${poolToken0}, ${poolToken1})
        chain=(${onchainToken0}, ${onchainToken1})`
     );
   }
 
   // Confirm the token this controller tracks matches pool token0 or token1.
-  const trackedToken = TOKEN_ADDRESS.toLowerCase();
+  const trackedToken = tokenAddress.toLowerCase();
   const tokenIs0 = trackedToken === onchainToken0;
   const tokenIs1 = trackedToken === onchainToken1;
   if (!tokenIs0 && !tokenIs1) {
     throw new Error(
       `TOKEN_ADDRESS is not in the pool.
-       TOKEN_ADDRESS=${TOKEN_ADDRESS}
+       TOKEN_ADDRESS=${tokenAddress}
        pool.token0=${onchainToken0}
        pool.token1=${onchainToken1}`
     );
   }
 
   console.log("Signer:", signer.address);
-  console.log("Token:", TOKEN_ADDRESS);
-  console.log("NFT:", JSTVIP_ADDRESS);
-  console.log("Pool:", POOL_ADDRESS);
+  console.log("Token:", tokenAddress);
+  console.log("NFT:", nftAddress);
+  console.log("Pool:", poolAddress);
   console.log("Pool token0:", onchainToken0);
   console.log("Pool token1:", onchainToken1);
   console.log("State file:", STATE_FILE);

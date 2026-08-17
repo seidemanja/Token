@@ -1,20 +1,23 @@
 import { ethers } from "hardhat";
 
-const { POOL_ADDRESS, POOL_TOKEN0, POOL_TOKEN1, network } = require("../env");
+const { POOL_ADDRESS, POOL_TOKEN0, POOL_TOKEN1, network, requireValue } = require("../env");
 
 async function main() {
   console.log(`Checking pool (network=${network})`);
-  const pool = await ethers.getContractAt("IUniswapV3PoolMinimal", POOL_ADDRESS);
+  const poolAddress = requireValue(POOL_ADDRESS, "POOL_ADDRESS");
+  const poolToken0 = requireValue(POOL_TOKEN0, "POOL_TOKEN0");
+  const poolToken1 = requireValue(POOL_TOKEN1, "POOL_TOKEN1");
+  const pool = await ethers.getContractAt("IUniswapV3PoolMinimal", poolAddress);
 
   const token0 = (await pool.token0()).toLowerCase();
   const token1 = (await pool.token1()).toLowerCase();
   const slot0 = await pool.slot0();
 
-  console.log("POOL_ADDRESS:", POOL_ADDRESS);
+  console.log("POOL_ADDRESS:", poolAddress);
   console.log("token0 (chain):", token0);
   console.log("token1 (chain):", token1);
-  console.log("token0 (env):  ", POOL_TOKEN0.toLowerCase());
-  console.log("token1 (env):  ", POOL_TOKEN1.toLowerCase());
+  console.log("token0 (env):  ", poolToken0.toLowerCase());
+  console.log("token1 (env):  ", poolToken1.toLowerCase());
   console.log("slot0.sqrtPriceX96:", slot0.sqrtPriceX96.toString());
 
   if (slot0.sqrtPriceX96 === 0n) {

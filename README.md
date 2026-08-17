@@ -71,6 +71,12 @@ Compile contracts:
 
     npm run compile
 
+Create a local environment file from the committed template:
+
+    cp .env.example .env
+
+The `.env` file is intentionally ignored by git. For local work, use Hardhat development accounts only. Never place a private key that controls real funds or production roles in this repo.
+
 For local AMM/simulation work, start a Hardhat node in one terminal:
 
     npx hardhat node
@@ -83,7 +89,22 @@ Then deploy local Uniswap V3 support contracts, the token, the NFT contract, poo
     NETWORK=local npx hardhat run scripts/amm/02_create_and_init_pool.ts --network localhost
     NETWORK=local npx hardhat run scripts/amm/03_mint_liquidity.ts --network localhost
 
-For the NFT deploy script, set `JSTVIP_ADMIN` and `JSTVIP_MINTER` in `.env`. In local simulation, these can be Hardhat-controlled addresses. After deployment, set `LOCAL_JSTVIP_ADDRESS` to the deployed NFT address.
+For the NFT deploy script, set `JSTVIP_ADMIN` and `JSTVIP_MINTER` in `.env`. In local simulation, these can be Hardhat-controlled addresses. After deployment, set `LOCAL_JSTVIP_ADDRESS` to the deployed NFT address. Also set the local AMM/token values printed by the deployment scripts:
+
+- `LOCAL_UNISWAP_V3_FACTORY`
+- `LOCAL_UNISWAP_V3_POSITION_MANAGER`
+- `LOCAL_WETH_ADDRESS`
+- `LOCAL_TOKEN_ADDRESS`
+- `LOCAL_JSTVIP_ADDRESS`
+- `LOCAL_UNISWAP_V3_POOL_ADDRESS`
+- `LOCAL_POOL_TOKEN0_ADDRESS`
+- `LOCAL_POOL_TOKEN1_ADDRESS`
+
+Verify the end-to-end pipeline with a small smoke simulation:
+
+    SIM_NUM_AGENTS=6 SIM_MAX_AGENTS=12 THRESHOLD_TOKENS=0.00001 python -m sim.run_sim --num-days 2
+
+The low threshold in this smoke command is intentional: it forces the reward controller path to mint NFTs during a short run. For normal simulations, use the threshold in `.env`.
 
 Run a simulation:
 

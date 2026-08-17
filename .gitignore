@@ -28,6 +28,7 @@ typechain-types/
 
 .env
 .env.*
+!.env.example
 
 # Python/runtime caches
 __pycache__/
