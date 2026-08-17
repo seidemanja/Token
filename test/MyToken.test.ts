@@ -17,7 +17,7 @@ describe("MyToken", function () {
     // Deploy the contract
     const MyTokenFactory = await ethers.getContractFactory("MyToken");
     const initialSupply = ethers.parseUnits("1000000", 18);
-    myToken = await MyTokenFactory.deploy(initialSupply);
+    myToken = await MyTokenFactory.deploy("MyToken", "MTK", initialSupply);
     await myToken.waitForDeployment();
   });
 
