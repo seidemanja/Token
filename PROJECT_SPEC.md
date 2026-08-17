@@ -93,4 +93,4 @@ Cohort plots should prefer medians and confidence intervals where feasible to re
 
 - Do not commit `.env`, private keys, SQLite DBs, `sim/out/`, `sim/reports/`, Hardhat artifacts, caches, controller logs, controller PID files, or reward state JSON.
 - If any secret is ever committed, assume it is compromised even after history cleanup.
-- Before employer-facing handoff, run at minimum `npm test`, `npm audit --omit=dev`, and a Python syntax/import check for `sim/`.
+- Before public or reviewer-facing handoff, run at minimum `npm test`, `npm audit --omit=dev`, and a Python syntax/import check for `sim/`.
